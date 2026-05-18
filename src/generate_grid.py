@@ -8,6 +8,8 @@ import re
 import sys
 import types
 import urllib.parse
+import urllib.request
+import urllib.error
 import zipfile
 from functools import reduce
 
@@ -19,14 +21,82 @@ from . import data, util
 JITEN_INTERVAL_MARKER = 1000000
 GSM_ENCOUNTER_MARKER = 2000000
 EXTERNAL_SCORE_SCALE = 1000
+JMDICT_CACHE_VERSION = 2
+GSM_API_BASE_URL = "http://localhost:7275"
+JITEN_API_BASE_URL = "https://api.jiten.moe/api"
 
 
 def valid_unit_key(config: types.SimpleNamespace, unit_key: str) -> bool:
     return util.ignored_characters.find(unit_key) == -1 and (not config.kanjionly or util.is_kanji(unit_key))
 
 
-def contains_kanji(text: str) -> bool:
-    return any(util.is_kanji(ch) for ch in text)
+def download_jiten_vocabulary_export(token: str) -> str:
+    auth_token = token.strip()
+    if not auth_token:
+        raise ValueError("Missing Jiten API token")
+
+    if ":" in auth_token and "\n" not in auth_token:
+        header_name, header_value = auth_token.split(":", 1)
+        auth_header = (header_name.strip(), header_value.strip())
+    else:
+        if auth_token.startswith("ak_"):
+            auth_token = "ApiKey " + auth_token
+        elif not auth_token.lower().startswith(("bearer ", "apikey ")):
+            auth_token = "Bearer " + auth_token
+        auth_header = ("Authorization", auth_token)
+
+    request = urllib.request.Request(
+        JITEN_API_BASE_URL + "/user/vocabulary/export",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            auth_header[0]: auth_header[1],
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read().decode("utf-8")
+
+
+def jiten_api_json(token: str, path: str):
+    auth_token = token.strip()
+    if not auth_token:
+        raise ValueError("Missing Jiten API token")
+
+    if ":" in auth_token and "\n" not in auth_token:
+        header_name, header_value = auth_token.split(":", 1)
+        auth_header = (header_name.strip(), header_value.strip())
+    else:
+        if auth_token.startswith("ak_"):
+            auth_token = "ApiKey " + auth_token
+        elif not auth_token.lower().startswith(("bearer ", "apikey ")):
+            auth_token = "Bearer " + auth_token
+        auth_header = ("Authorization", auth_token)
+
+    request = urllib.request.Request(
+        JITEN_API_BASE_URL + path,
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            auth_header[0]: auth_header[1],
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def load_jiten_vocabulary_export(config: types.SimpleNamespace) -> dict:
+    if getattr(config, "usejitenapi", False):
+        token = getattr(config, "jitenapikey", "").strip()
+        if not token:
+            return {}
+        return {"cards": jiten_api_json(token, "/user/vocabulary/cards"), "has_word_text": True}
+
+    source_path = getattr(config, "textsourcepath", "")
+    if not source_path or not os.path.isfile(source_path):
+        return {}
+
+    with open(source_path, "r", encoding="utf-8-sig") as backup_in:
+        return json.load(backup_in)
 
 
 def external_unit_score(unit, config: types.SimpleNamespace) -> float:
@@ -99,9 +169,12 @@ def add_gsm_csv_units(units: dict, config: types.SimpleNamespace, anki_priority:
                 data["idx"] = min(data["idx"], idx)
                 data["count"] += encounters
 
+    return add_gsm_aggregate_units(units, aggregate, anki_priority)
+
+
+def add_gsm_aggregate_units(units: dict, aggregate: dict, anki_priority: bool = False) -> dict:
     if not aggregate:
         return units
-
     max_count = max(data["count"] for data in aggregate.values())
     for ch, data in aggregate.items():
         if anki_priority and ch in units:
@@ -118,6 +191,41 @@ def add_gsm_csv_units(units: dict, config: types.SimpleNamespace, anki_priority:
     return units
 
 
+def gsm_api_json(path: str, timeout: float = 1.5):
+    url = GSM_API_BASE_URL + path
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "Accept-Encoding": "identity"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def gsm_api_available() -> bool:
+    try:
+        status = gsm_api_json("/api/tokenization/status", timeout=0.75)
+        return bool(status.get("enabled", True))
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def add_gsm_api_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
+    try:
+        payload = gsm_api_json("/api/stats/kanji-grid", timeout=5)
+    except (OSError, ValueError, urllib.error.URLError):
+        return units
+
+    aggregate = {}
+    for idx, row in enumerate(payload.get("kanji_data", []), start=1):
+        ch = row.get("kanji", "")
+        if not ch or not valid_unit_key(config, ch):
+            continue
+        try:
+            encounters = int(float(row.get("frequency") or 1))
+        except (TypeError, ValueError):
+            encounters = 1
+        aggregate[ch] = {"idx": idx, "count": max(encounters, 1)}
+
+    return add_gsm_aggregate_units(units, aggregate, anki_priority)
+
+
 def jmdict_cache_path() -> str:
     return os.path.join(os.path.dirname(__file__), "user_files", "jmdict_sequence_cache.json")
 
@@ -132,52 +240,91 @@ def load_jmdict_sequence_map(config: types.SimpleNamespace) -> dict:
     try:
         with open(cache_path, "r", encoding="utf-8") as cache_in:
             cache = json.load(cache_in)
-        if cache.get("source") == jmdict_path and cache.get("mtime") == stat.st_mtime and cache.get("size") == stat.st_size:
+        if cache.get("version") == JMDICT_CACHE_VERSION and cache.get("source") == jmdict_path and cache.get("mtime") == stat.st_mtime and cache.get("size") == stat.st_size:
             return {int(k): v for k, v in cache.get("mapping", {}).items()}
     except Exception:  # noqa: BLE001
         pass
 
     mapping = {}
+    mapping_scores = {}
     with zipfile.ZipFile(jmdict_path) as zip_in:
         term_banks = sorted(name for name in zip_in.namelist() if name.startswith("term_bank_") and name.endswith(".json"))
         for term_bank in term_banks:
             entries = json.loads(zip_in.read(term_bank).decode("utf-8"))
             for entry in entries:
                 if len(entry) > 6 and isinstance(entry[6], int):
-                    existing = mapping.get(entry[6])
-                    if existing is None or (not contains_kanji(existing) and contains_kanji(entry[0])):
+                    score = entry[4] if len(entry) > 4 and isinstance(entry[4], int) else 0
+                    if entry[6] not in mapping_scores or score > mapping_scores[entry[6]]:
                         mapping[entry[6]] = entry[0]
+                        mapping_scores[entry[6]] = score
 
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     try:
         with open(cache_path, "w", encoding="utf-8") as cache_out:
-            json.dump({"source": jmdict_path, "mtime": stat.st_mtime, "size": stat.st_size, "mapping": mapping}, cache_out, ensure_ascii=False)
+            json.dump({"version": JMDICT_CACHE_VERSION, "source": jmdict_path, "mtime": stat.st_mtime, "size": stat.st_size, "mapping": mapping}, cache_out, ensure_ascii=False)
     except Exception:  # noqa: BLE001
         pass
     return mapping
 
 
+def card_field(card: dict, short_name: str, long_name: str, default=None):
+    return card.get(short_name, card.get(long_name, default))
+
+
+def jiten_timestamp(value):
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0
+    return 0
+
+
+def jiten_card_interval(card: dict, config: types.SimpleNamespace) -> float:
+    state = card_field(card, "s", "state")
+    if state == 5 or state == "Mastered":
+        return float(config.interval)
+
+    interval = card_field(card, "st", "stability")
+    if interval is not None:
+        return float(interval)
+
+    due = jiten_timestamp(card_field(card, "du", "due", 0))
+    last_review = jiten_timestamp(card_field(card, "lr", "lastReview", 0))
+    return max((due - last_review) / 86400, 1) if due and last_review else 1
+
+
+def jiten_card_word(card: dict, sequence_map=None):
+    word_text = card_field(card, "wordText", "wordText")
+    if word_text:
+        return word_text
+    if sequence_map is None:
+        return None
+    return sequence_map.get(card_field(card, "w", "wordId"))
+
+
 def add_jiten_backup_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
-    source_path = getattr(config, "textsourcepath", "")
-    if not source_path or not os.path.isfile(source_path):
+    backup = load_jiten_vocabulary_export(config)
+    if not backup:
         return units
 
-    sequence_map = load_jmdict_sequence_map(config)
-    if not sequence_map:
-        return units
-
-    with open(source_path, "r", encoding="utf-8-sig") as backup_in:
-        backup = json.load(backup_in)
+    sequence_map = None
+    if not backup.get("has_word_text"):
+        sequence_map = load_jmdict_sequence_map(config)
+        if not sequence_map:
+            return units
 
     aggregate = {}
     for idx, card in enumerate(backup.get("cards", []), start=1):
-        word = sequence_map.get(card.get("w"))
+        word = jiten_card_word(card, sequence_map)
         if not word:
             continue
 
-        interval = card.get("st")
-        if interval is None:
-            interval = max((card.get("du", 0) - card.get("lr", 0)) / 86400, 1) if card.get("lr") and card.get("du") else 1
+        interval = jiten_card_interval(card, config)
 
         for ch in set(word):
             if not valid_unit_key(config, ch):
@@ -308,7 +455,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             external_key_css_gradient += "," + util.mute_hex_color(util.get_gradient_color_hex(i / gradient_key_step_count, config.gradientcolors))
         external_key_css_gradient += ")"
         result_html += "<p style=\"text-align: center;\">External&nbsp;<span class=\"key\" style=\"background: " + external_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;Stronger</p>\n"
-    if getattr(config, "usegsmsource", False):
+    if getattr(config, "usegsmapi", False) or getattr(config, "usegsmsource", False):
         gsm_key_css_gradient = "linear-gradient(90deg"
         for i in range(0, gradient_key_step_count + 1):
             gsm_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, ["#f0edf6", "#8a5fb5"])
@@ -443,7 +590,9 @@ def timetravel(card, revlog, timetravel_time):
 def kanjigrid(mw, config: types.SimpleNamespace):
     if getattr(config, "usetextsource", False) and not getattr(config, "mixtextsource", False):
         units = textfile_grid(config)
-        if getattr(config, "usegsmsource", False):
+        if getattr(config, "usegsmapi", False):
+            add_gsm_api_units(units, config, anki_priority=True)
+        elif getattr(config, "usegsmsource", False):
             add_gsm_csv_units(units, config, anki_priority=True)
         return units
 
@@ -492,7 +641,9 @@ def kanjigrid(mw, config: types.SimpleNamespace):
             add_jiten_backup_units(units, config, anki_priority=True)
         else:
             add_textfile_units(units, config, anki_priority=True)
-    if getattr(config, "usegsmsource", False):
+    if getattr(config, "usegsmapi", False):
+        add_gsm_api_units(units, config, anki_priority=True)
+    elif getattr(config, "usegsmsource", False):
         add_gsm_csv_units(units, config, anki_priority=True)
     return units
 

@@ -179,26 +179,37 @@ class KanjiGrid:
         general_tab_vertical_layout.addLayout(field_horizontal_layout)
 
         text_source_checkbox = QCheckBox("Use external export")
-        text_source_checkbox.setChecked(False)
+        text_source_checkbox.setChecked(getattr(config, "usetextsource", False) or getattr(config, "usegsmsource", False))
         general_tab_vertical_layout.addWidget(text_source_checkbox)
 
         text_source_mix = QCheckBox("Mix with deck (Anki takes priority)")
-        text_source_mix.setChecked(True)
-        text_source_mix.setEnabled(False)
+        text_source_mix.setChecked(getattr(config, "mixtextsource", True))
         general_tab_vertical_layout.addWidget(text_source_mix)
+
+        jiten_source_checkbox = QCheckBox("Include Jiten")
+        jiten_source_checkbox.setChecked(getattr(config, "usetextsource", False) or not getattr(config, "usegsmsource", False))
+        general_tab_vertical_layout.addWidget(jiten_source_checkbox)
+
+        jiten_api_checkbox = QCheckBox("Use Jiten API")
+        jiten_api_checkbox.setChecked(getattr(config, "usejitenapi", True))
+        general_tab_vertical_layout.addWidget(jiten_api_checkbox)
+
+        jiten_api_token = QLineEdit()
+        jiten_api_token.setPlaceholderText("Jiten API key or Bearer token")
+        jiten_api_token.setText(getattr(config, "jitenapikey", ""))
+        jiten_api_token.setEchoMode(QLineEdit.EchoMode.Password)
+        general_tab_vertical_layout.addWidget(jiten_api_token)
 
         text_source_kind = QComboBox()
         text_source_kind.addItem("Plain TXT export", "txt")
         text_source_kind.addItem("Jiten backup export", "jiten")
-        text_source_kind.setEnabled(False)
+        text_source_kind.setCurrentIndex(max(text_source_kind.findData(getattr(config, "textsourcekind", "jiten")), 0))
         general_tab_vertical_layout.addWidget(text_source_kind)
 
         text_source_horizontal_layout = QHBoxLayout()
         text_source_path = QLineEdit()
-        text_source_path.setPlaceholderText("One word per line")
-        text_source_path.setEnabled(False)
+        text_source_path.setText(getattr(config, "textsourcepath", ""))
         text_source_browse = QPushButton("Browse")
-        text_source_browse.setEnabled(False)
 
         def browse_text_source() -> None:
             if text_source_kind.currentData() == "jiten":
@@ -214,10 +225,6 @@ class KanjiGrid:
             else:
                 text_source_path.setPlaceholderText("One word per line")
 
-        text_source_checkbox.toggled.connect(text_source_path.setEnabled)
-        text_source_checkbox.toggled.connect(text_source_browse.setEnabled)
-        text_source_checkbox.toggled.connect(text_source_mix.setEnabled)
-        text_source_checkbox.toggled.connect(text_source_kind.setEnabled)
         text_source_kind.currentTextChanged.connect(lambda _: update_text_source_kind())
         text_source_browse.clicked.connect(lambda _: browse_text_source())
         text_source_horizontal_layout.addWidget(text_source_path)
@@ -227,51 +234,82 @@ class KanjiGrid:
         jmdict_horizontal_layout = QHBoxLayout()
         jmdict_path = QLineEdit()
         jmdict_path.setPlaceholderText("JMdict Yomitan ZIP")
-        jmdict_path.setEnabled(False)
+        jmdict_path.setText(getattr(config, "jmdictpath", ""))
         jmdict_browse = QPushButton("Browse JMdict")
-        jmdict_browse.setEnabled(False)
-
-        def update_jmdict_controls() -> None:
-            enabled = text_source_checkbox.isChecked() and text_source_kind.currentData() == "jiten"
-            jmdict_path.setEnabled(enabled)
-            jmdict_browse.setEnabled(enabled)
 
         def browse_jmdict() -> None:
             file_name = QFileDialog.getOpenFileName(setup_win, "Select JMdict Yomitan ZIP", "", "ZIP Files (*.zip);;All Files (*)")[0]
             if file_name != "":
                 jmdict_path.setText(file_name)
 
-        text_source_checkbox.toggled.connect(lambda _: update_jmdict_controls())
-        text_source_kind.currentTextChanged.connect(lambda _: update_jmdict_controls())
         jmdict_browse.clicked.connect(lambda _: browse_jmdict())
         jmdict_horizontal_layout.addWidget(jmdict_path)
         jmdict_horizontal_layout.addWidget(jmdict_browse)
         general_tab_vertical_layout.addLayout(jmdict_horizontal_layout)
-        update_text_source_kind()
-        update_jmdict_controls()
 
-        gsm_source_checkbox = QCheckBox("Use GSM encounters CSV")
-        gsm_source_checkbox.setChecked(False)
+        gsm_source_checkbox = QCheckBox("Include GSM")
+        gsm_source_checkbox.setChecked(getattr(config, "usegsmsource", False))
         general_tab_vertical_layout.addWidget(gsm_source_checkbox)
+
+        gsm_api_detected = generate_grid.gsm_api_available()
+        gsm_api_status = QLabel("GSM API detected at http://localhost:7275" if gsm_api_detected else "GSM API not detected")
+        gsm_api_status.setStyleSheet("color: gray")
+        general_tab_vertical_layout.addWidget(gsm_api_status)
+
+        gsm_api_checkbox = QCheckBox("Use GSM API")
+        gsm_api_checkbox.setChecked(gsm_api_detected and getattr(config, "usegsmapi", True))
+        general_tab_vertical_layout.addWidget(gsm_api_checkbox)
 
         gsm_source_horizontal_layout = QHBoxLayout()
         gsm_source_path = QLineEdit()
         gsm_source_path.setPlaceholderText("GSM CSV export")
-        gsm_source_path.setEnabled(False)
+        gsm_source_path.setText(getattr(config, "gsmsourcepath", ""))
         gsm_source_browse = QPushButton("Browse GSM")
-        gsm_source_browse.setEnabled(False)
 
         def browse_gsm_source() -> None:
             file_name = QFileDialog.getOpenFileName(setup_win, "Select GSM CSV Export", "", "CSV Files (*.csv);;All Files (*)")[0]
             if file_name != "":
                 gsm_source_path.setText(file_name)
 
-        gsm_source_checkbox.toggled.connect(gsm_source_path.setEnabled)
-        gsm_source_checkbox.toggled.connect(gsm_source_browse.setEnabled)
         gsm_source_browse.clicked.connect(lambda _: browse_gsm_source())
         gsm_source_horizontal_layout.addWidget(gsm_source_path)
         gsm_source_horizontal_layout.addWidget(gsm_source_browse)
         general_tab_vertical_layout.addLayout(gsm_source_horizontal_layout)
+
+        def update_external_source_controls() -> None:
+            external_enabled = text_source_checkbox.isChecked()
+            jiten_enabled = external_enabled and jiten_source_checkbox.isChecked()
+            jiten_api_enabled = jiten_enabled and jiten_api_checkbox.isChecked()
+            jiten_file_enabled = jiten_enabled and not jiten_api_enabled
+            jiten_backup_selected = text_source_kind.currentData() == "jiten"
+            gsm_enabled = external_enabled and gsm_source_checkbox.isChecked()
+
+            text_source_mix.setVisible(external_enabled)
+            jiten_source_checkbox.setVisible(external_enabled)
+            jiten_api_checkbox.setVisible(jiten_enabled)
+            jiten_api_token.setVisible(jiten_api_enabled)
+            text_source_kind.setVisible(jiten_file_enabled)
+            text_source_path.setVisible(jiten_file_enabled)
+            text_source_browse.setVisible(jiten_file_enabled)
+            jmdict_path.setVisible(jiten_file_enabled and jiten_backup_selected)
+            jmdict_browse.setVisible(jiten_file_enabled and jiten_backup_selected)
+
+            gsm_source_checkbox.setVisible(external_enabled)
+            gsm_api_status.setVisible(gsm_enabled)
+            gsm_api_checkbox.setVisible(gsm_enabled)
+            gsm_api_checkbox.setEnabled(gsm_api_detected)
+            gsm_source_path.setVisible(gsm_enabled and not gsm_api_checkbox.isChecked())
+            gsm_source_browse.setVisible(gsm_enabled and not gsm_api_checkbox.isChecked())
+
+            update_text_source_kind()
+
+        text_source_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        jiten_source_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        jiten_api_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        text_source_kind.currentTextChanged.connect(lambda _: update_external_source_controls())
+        gsm_source_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        gsm_api_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        update_external_source_controls()
 
         groupby = QComboBox()
         groupby.addItems([
@@ -350,13 +388,20 @@ class KanjiGrid:
         data_tab_vertical_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         def set_config_attributes(config: types.SimpleNamespace) -> types.SimpleNamespace:
+            external_enabled = text_source_checkbox.isChecked()
+            jiten_selected = external_enabled and jiten_source_checkbox.isChecked()
+            jiten_kind = "jiten" if jiten_api_checkbox.isChecked() else text_source_kind.currentData()
+            gsm_selected = external_enabled and gsm_source_checkbox.isChecked()
             config.fieldslist = shlex.split(field.currentText().lower())
-            config.usetextsource = text_source_checkbox.isChecked()
+            config.usetextsource = jiten_selected
             config.mixtextsource = text_source_mix.isChecked()
-            config.textsourcekind = text_source_kind.currentData()
+            config.textsourcekind = jiten_kind
             config.textsourcepath = text_source_path.text()
             config.jmdictpath = jmdict_path.text()
-            config.usegsmsource = gsm_source_checkbox.isChecked()
+            config.usejitenapi = jiten_selected and jiten_api_checkbox.isChecked()
+            config.jitenapikey = jiten_api_token.text()
+            config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
+            config.usegsmsource = gsm_selected
             config.gsmsourcepath = gsm_source_path.text()
             if save_defaultdeck.isChecked():
                 config.defaultdeck = deckcb.currentText()
@@ -371,6 +416,24 @@ class KanjiGrid:
             config.timetravel_enabled = time_travel_default_time.toMSecsSinceEpoch() != time_travel_datetime.dateTime().toMSecsSinceEpoch()
             config.timetravel_time = time_travel_datetime.dateTime().toMSecsSinceEpoch()
             return config
+
+        def save_source_settings() -> None:
+            external_enabled = text_source_checkbox.isChecked()
+            jiten_selected = external_enabled and jiten_source_checkbox.isChecked()
+            jiten_kind = "jiten" if jiten_api_checkbox.isChecked() else text_source_kind.currentData()
+            gsm_selected = external_enabled and gsm_source_checkbox.isChecked()
+            saved_config = types.SimpleNamespace(**config_util.get_config(mw))
+            saved_config.usetextsource = jiten_selected
+            saved_config.mixtextsource = text_source_mix.isChecked()
+            saved_config.textsourcekind = jiten_kind
+            saved_config.textsourcepath = text_source_path.text()
+            saved_config.jmdictpath = jmdict_path.text()
+            saved_config.usejitenapi = jiten_selected and jiten_api_checkbox.isChecked()
+            saved_config.jitenapikey = jiten_api_token.text()
+            saved_config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
+            saved_config.usegsmsource = gsm_selected
+            saved_config.gsmsourcepath = gsm_source_path.text()
+            config_util.set_config(mw, saved_config)
 
         data_tab_vertical_layout.addWidget(QLabel("Save grid without rendering:"))
         save_grid_buttons_horizontal_layout = QHBoxLayout()
@@ -473,21 +536,32 @@ class KanjiGrid:
         vertical_layout.addLayout(bottom_buttons_horizontal_layout)
 
         def accept_if_valid() -> None:
-            if text_source_checkbox.isChecked() and text_source_path.text().strip() == "":
+            external_enabled = text_source_checkbox.isChecked()
+            jiten_enabled = external_enabled and jiten_source_checkbox.isChecked()
+            gsm_enabled = external_enabled and gsm_source_checkbox.isChecked()
+            using_jiten_api = jiten_enabled and jiten_api_checkbox.isChecked()
+            if external_enabled and not jiten_enabled and not gsm_enabled:
+                QMessageBox.warning(setup_win, "External Export", "Choose at least one external source: Jiten or GSM.")
+                return
+            if using_jiten_api and jiten_api_token.text().strip() == "":
+                QMessageBox.warning(setup_win, "Jiten API Export", "Enter a Jiten API key or Bearer token first.")
+                return
+            if jiten_enabled and not using_jiten_api and text_source_path.text().strip() == "":
                 QMessageBox.warning(setup_win, "External Export", "Select an export file first.")
                 return
-            if text_source_checkbox.isChecked() and not os.path.isfile(text_source_path.text()):
+            if jiten_enabled and not using_jiten_api and not os.path.isfile(text_source_path.text()):
                 QMessageBox.warning(setup_win, "External Export", "The selected export file does not exist.")
                 return
-            if text_source_checkbox.isChecked() and text_source_kind.currentData() == "jiten" and not os.path.isfile(jmdict_path.text()):
+            if jiten_enabled and text_source_kind.currentData() == "jiten" and not using_jiten_api and not os.path.isfile(jmdict_path.text()):
                 QMessageBox.warning(setup_win, "Jiten Backup Export", "Select the JMdict Yomitan ZIP first.")
                 return
-            if gsm_source_checkbox.isChecked() and gsm_source_path.text().strip() == "":
+            if gsm_enabled and not gsm_api_checkbox.isChecked() and gsm_source_path.text().strip() == "":
                 QMessageBox.warning(setup_win, "GSM CSV Export", "Select a GSM CSV file first.")
                 return
-            if gsm_source_checkbox.isChecked() and not os.path.isfile(gsm_source_path.text()):
+            if gsm_enabled and not gsm_api_checkbox.isChecked() and not os.path.isfile(gsm_source_path.text()):
                 QMessageBox.warning(setup_win, "GSM CSV Export", "The selected GSM CSV file does not exist.")
                 return
+            save_source_settings()
             setup_win.accept()
 
         generate_button = QPushButton("Generate", clicked = accept_if_valid)

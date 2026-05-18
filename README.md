@@ -69,7 +69,9 @@ Then select:
 - the Jiten vocabulary backup `.json`
 - a JMdict/Yomitan ZIP, such as `JMdict_english.zip`
 
-Jiten backups store word IDs instead of the written words. This fork resolves those IDs through the JMdict/Yomitan ZIP, then uses Jiten's scheduling interval data when available. Jiten-derived kanji use the same gradient family as Anki, but muted/desaturated to show that the data came from outside Anki.
+Jiten backups store word IDs instead of the written words. When using a backup JSON file, this fork resolves those IDs through the JMdict/Yomitan ZIP, then uses Jiten's scheduling interval data when available. Jiten-derived kanji use the same gradient family as Anki, but muted/desaturated to show that the data came from outside Anki.
+
+The setup window also has a `Use Jiten API` option and a password-style `Jiten API key or Bearer token` field. When enabled, the add-on downloads enriched card data from Jiten during grid generation instead of asking for a backup JSON file or JMdict ZIP. The credential is saved in the add-on configuration so it persists between sessions.
 
 The add-on creates a local cache for the JMdict ID mapping in:
 
@@ -77,13 +79,25 @@ The add-on creates a local cache for the JMdict ID mapping in:
 user_files/jmdict_sequence_cache.json
 ```
 
-### GSM Encounters CSV
+### GSM API / Encounters CSV
 
-Use this for a GSM CSV export of words encountered while playing games.
+Use this for GameSentenceMiner encounter data.
 
-Enable:
+If GSM is running locally, the add-on detects its API at:
 
-- `Use GSM encounters CSV`
+```text
+http://localhost:7275
+```
+
+When detected, enable:
+
+- `Use GSM API`
+
+The add-on reads GSM's own kanji grid endpoint and uses its encounter frequencies directly.
+
+If GSM is not running, or if you prefer a file-based workflow, use the CSV fallback:
+
+- `Use GSM encounters CSV fallback`
 
 Then select the GSM `.csv` file.
 
@@ -95,7 +109,7 @@ You can use all three layers at the same time:
 
 1. Anki deck and fields
 2. Jiten backup export
-3. GSM encounters CSV
+3. GSM API or encounters CSV
 
 Priority order:
 
