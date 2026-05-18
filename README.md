@@ -2,7 +2,7 @@
 
 This is a personal fork of [Kanji Grid Kuuube](https://github.com/Kuuuube/kanjigrid), which is itself an improved version of the older Kanji Grid add-on for Anki.
 
-The goal of this fork is narrow: keep the original Kanji Grid behavior, but allow the grid to be enriched with external knowledge sources that are not represented accurately inside Anki.
+The goal of this fork is to allow including external sources of known data that are not in anki for any reason, mainly for having been acquired without the need of mining. 
 
 ![Screenshot1](./grid.png)
 ![Screenshot2](./new_legend.png)
