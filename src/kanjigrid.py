@@ -182,29 +182,37 @@ class KanjiGrid:
         text_source_checkbox.setChecked(getattr(config, "usetextsource", False) or getattr(config, "usegsmsource", False))
         general_tab_vertical_layout.addWidget(text_source_checkbox)
 
+        external_source_layout = QVBoxLayout()
+        external_source_layout.setContentsMargins(20, 0, 0, 0)
+        general_tab_vertical_layout.addLayout(external_source_layout)
+
         text_source_mix = QCheckBox("Mix with deck (Anki takes priority)")
         text_source_mix.setChecked(getattr(config, "mixtextsource", True))
-        general_tab_vertical_layout.addWidget(text_source_mix)
+        external_source_layout.addWidget(text_source_mix)
 
         jiten_source_checkbox = QCheckBox("Include Jiten")
         jiten_source_checkbox.setChecked(getattr(config, "usetextsource", False) or not getattr(config, "usegsmsource", False))
-        general_tab_vertical_layout.addWidget(jiten_source_checkbox)
+        external_source_layout.addWidget(jiten_source_checkbox)
+
+        jiten_source_layout = QVBoxLayout()
+        jiten_source_layout.setContentsMargins(20, 0, 0, 0)
+        external_source_layout.addLayout(jiten_source_layout)
 
         jiten_api_checkbox = QCheckBox("Use Jiten API")
         jiten_api_checkbox.setChecked(getattr(config, "usejitenapi", True))
-        general_tab_vertical_layout.addWidget(jiten_api_checkbox)
+        jiten_source_layout.addWidget(jiten_api_checkbox)
 
         jiten_api_token = QLineEdit()
         jiten_api_token.setPlaceholderText("Jiten API key or Bearer token")
         jiten_api_token.setText(getattr(config, "jitenapikey", ""))
         jiten_api_token.setEchoMode(QLineEdit.EchoMode.Password)
-        general_tab_vertical_layout.addWidget(jiten_api_token)
+        jiten_source_layout.addWidget(jiten_api_token)
 
         text_source_kind = QComboBox()
         text_source_kind.addItem("Plain TXT export", "txt")
         text_source_kind.addItem("Jiten backup export", "jiten")
         text_source_kind.setCurrentIndex(max(text_source_kind.findData(getattr(config, "textsourcekind", "jiten")), 0))
-        general_tab_vertical_layout.addWidget(text_source_kind)
+        jiten_source_layout.addWidget(text_source_kind)
 
         text_source_horizontal_layout = QHBoxLayout()
         text_source_path = QLineEdit()
@@ -229,7 +237,7 @@ class KanjiGrid:
         text_source_browse.clicked.connect(lambda _: browse_text_source())
         text_source_horizontal_layout.addWidget(text_source_path)
         text_source_horizontal_layout.addWidget(text_source_browse)
-        general_tab_vertical_layout.addLayout(text_source_horizontal_layout)
+        jiten_source_layout.addLayout(text_source_horizontal_layout)
 
         jmdict_horizontal_layout = QHBoxLayout()
         jmdict_path = QLineEdit()
@@ -245,20 +253,24 @@ class KanjiGrid:
         jmdict_browse.clicked.connect(lambda _: browse_jmdict())
         jmdict_horizontal_layout.addWidget(jmdict_path)
         jmdict_horizontal_layout.addWidget(jmdict_browse)
-        general_tab_vertical_layout.addLayout(jmdict_horizontal_layout)
+        jiten_source_layout.addLayout(jmdict_horizontal_layout)
 
         gsm_source_checkbox = QCheckBox("Include GSM")
         gsm_source_checkbox.setChecked(getattr(config, "usegsmsource", False))
-        general_tab_vertical_layout.addWidget(gsm_source_checkbox)
+        external_source_layout.addWidget(gsm_source_checkbox)
+
+        gsm_source_layout = QVBoxLayout()
+        gsm_source_layout.setContentsMargins(20, 0, 0, 0)
+        external_source_layout.addLayout(gsm_source_layout)
 
         gsm_api_detected = generate_grid.gsm_api_available()
         gsm_api_status = QLabel("GSM API detected at http://localhost:7275" if gsm_api_detected else "GSM API not detected")
         gsm_api_status.setStyleSheet("color: gray")
-        general_tab_vertical_layout.addWidget(gsm_api_status)
+        gsm_source_layout.addWidget(gsm_api_status)
 
         gsm_api_checkbox = QCheckBox("Use GSM API")
         gsm_api_checkbox.setChecked(gsm_api_detected and getattr(config, "usegsmapi", True))
-        general_tab_vertical_layout.addWidget(gsm_api_checkbox)
+        gsm_source_layout.addWidget(gsm_api_checkbox)
 
         gsm_source_horizontal_layout = QHBoxLayout()
         gsm_source_path = QLineEdit()
@@ -274,7 +286,7 @@ class KanjiGrid:
         gsm_source_browse.clicked.connect(lambda _: browse_gsm_source())
         gsm_source_horizontal_layout.addWidget(gsm_source_path)
         gsm_source_horizontal_layout.addWidget(gsm_source_browse)
-        general_tab_vertical_layout.addLayout(gsm_source_horizontal_layout)
+        gsm_source_layout.addLayout(gsm_source_horizontal_layout)
 
         def update_external_source_controls() -> None:
             external_enabled = text_source_checkbox.isChecked()
