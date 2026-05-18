@@ -1,4 +1,5 @@
 import shlex
+import os
 import types
 
 from aqt import gui_hooks, main, mw
@@ -9,6 +10,7 @@ from aqt.qt import (
     QDateTime,
     QDateTimeEdit,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -176,6 +178,103 @@ class KanjiGrid:
         field_horizontal_layout.addWidget(field)
         general_tab_vertical_layout.addLayout(field_horizontal_layout)
 
+        text_source_checkbox = QCheckBox("Use external export")
+        text_source_checkbox.setChecked(False)
+        general_tab_vertical_layout.addWidget(text_source_checkbox)
+
+        text_source_mix = QCheckBox("Mix with deck (Anki takes priority)")
+        text_source_mix.setChecked(True)
+        text_source_mix.setEnabled(False)
+        general_tab_vertical_layout.addWidget(text_source_mix)
+
+        text_source_kind = QComboBox()
+        text_source_kind.addItem("Plain TXT export", "txt")
+        text_source_kind.addItem("Jiten backup export", "jiten")
+        text_source_kind.setEnabled(False)
+        general_tab_vertical_layout.addWidget(text_source_kind)
+
+        text_source_horizontal_layout = QHBoxLayout()
+        text_source_path = QLineEdit()
+        text_source_path.setPlaceholderText("One word per line")
+        text_source_path.setEnabled(False)
+        text_source_browse = QPushButton("Browse")
+        text_source_browse.setEnabled(False)
+
+        def browse_text_source() -> None:
+            if text_source_kind.currentData() == "jiten":
+                file_name = QFileDialog.getOpenFileName(setup_win, "Select Jiten Backup Export", "", "JSON Files (*.json);;All Files (*)")[0]
+            else:
+                file_name = QFileDialog.getOpenFileName(setup_win, "Select TXT Word List", "", "Text Files (*.txt);;All Files (*)")[0]
+            if file_name != "":
+                text_source_path.setText(file_name)
+
+        def update_text_source_kind() -> None:
+            if text_source_kind.currentData() == "jiten":
+                text_source_path.setPlaceholderText("Jiten vocabulary backup JSON")
+            else:
+                text_source_path.setPlaceholderText("One word per line")
+
+        text_source_checkbox.toggled.connect(text_source_path.setEnabled)
+        text_source_checkbox.toggled.connect(text_source_browse.setEnabled)
+        text_source_checkbox.toggled.connect(text_source_mix.setEnabled)
+        text_source_checkbox.toggled.connect(text_source_kind.setEnabled)
+        text_source_kind.currentTextChanged.connect(lambda _: update_text_source_kind())
+        text_source_browse.clicked.connect(lambda _: browse_text_source())
+        text_source_horizontal_layout.addWidget(text_source_path)
+        text_source_horizontal_layout.addWidget(text_source_browse)
+        general_tab_vertical_layout.addLayout(text_source_horizontal_layout)
+
+        jmdict_horizontal_layout = QHBoxLayout()
+        jmdict_path = QLineEdit()
+        jmdict_path.setPlaceholderText("JMdict Yomitan ZIP")
+        jmdict_path.setText("C:\\Users\\shiro\\Downloads\\JMdict_english.zip")
+        jmdict_path.setEnabled(False)
+        jmdict_browse = QPushButton("Browse JMdict")
+        jmdict_browse.setEnabled(False)
+
+        def update_jmdict_controls() -> None:
+            enabled = text_source_checkbox.isChecked() and text_source_kind.currentData() == "jiten"
+            jmdict_path.setEnabled(enabled)
+            jmdict_browse.setEnabled(enabled)
+
+        def browse_jmdict() -> None:
+            file_name = QFileDialog.getOpenFileName(setup_win, "Select JMdict Yomitan ZIP", "", "ZIP Files (*.zip);;All Files (*)")[0]
+            if file_name != "":
+                jmdict_path.setText(file_name)
+
+        text_source_checkbox.toggled.connect(lambda _: update_jmdict_controls())
+        text_source_kind.currentTextChanged.connect(lambda _: update_jmdict_controls())
+        jmdict_browse.clicked.connect(lambda _: browse_jmdict())
+        jmdict_horizontal_layout.addWidget(jmdict_path)
+        jmdict_horizontal_layout.addWidget(jmdict_browse)
+        general_tab_vertical_layout.addLayout(jmdict_horizontal_layout)
+        update_text_source_kind()
+        update_jmdict_controls()
+
+        gsm_source_checkbox = QCheckBox("Use GSM encounters CSV")
+        gsm_source_checkbox.setChecked(False)
+        general_tab_vertical_layout.addWidget(gsm_source_checkbox)
+
+        gsm_source_horizontal_layout = QHBoxLayout()
+        gsm_source_path = QLineEdit()
+        gsm_source_path.setPlaceholderText("GSM CSV export")
+        gsm_source_path.setText("C:\\Users\\shiro\\Downloads\\gsm_words_not_in_anki.csv")
+        gsm_source_path.setEnabled(False)
+        gsm_source_browse = QPushButton("Browse GSM")
+        gsm_source_browse.setEnabled(False)
+
+        def browse_gsm_source() -> None:
+            file_name = QFileDialog.getOpenFileName(setup_win, "Select GSM CSV Export", "", "CSV Files (*.csv);;All Files (*)")[0]
+            if file_name != "":
+                gsm_source_path.setText(file_name)
+
+        gsm_source_checkbox.toggled.connect(gsm_source_path.setEnabled)
+        gsm_source_checkbox.toggled.connect(gsm_source_browse.setEnabled)
+        gsm_source_browse.clicked.connect(lambda _: browse_gsm_source())
+        gsm_source_horizontal_layout.addWidget(gsm_source_path)
+        gsm_source_horizontal_layout.addWidget(gsm_source_browse)
+        general_tab_vertical_layout.addLayout(gsm_source_horizontal_layout)
+
         groupby = QComboBox()
         groupby.addItems([
             "None",
@@ -254,6 +353,13 @@ class KanjiGrid:
 
         def set_config_attributes(config: types.SimpleNamespace) -> types.SimpleNamespace:
             config.fieldslist = shlex.split(field.currentText().lower())
+            config.usetextsource = text_source_checkbox.isChecked()
+            config.mixtextsource = text_source_mix.isChecked()
+            config.textsourcekind = text_source_kind.currentData()
+            config.textsourcepath = text_source_path.text()
+            config.jmdictpath = jmdict_path.text()
+            config.usegsmsource = gsm_source_checkbox.isChecked()
+            config.gsmsourcepath = gsm_source_path.text()
             if save_defaultdeck.isChecked():
                 config.defaultdeck = deckcb.currentText()
             if save_defaultfield.isChecked():
@@ -367,7 +473,26 @@ class KanjiGrid:
         #Bottom Buttons
         bottom_buttons_horizontal_layout = QHBoxLayout()
         vertical_layout.addLayout(bottom_buttons_horizontal_layout)
-        generate_button = QPushButton("Generate", clicked = setup_win.accept)
+
+        def accept_if_valid() -> None:
+            if text_source_checkbox.isChecked() and text_source_path.text().strip() == "":
+                QMessageBox.warning(setup_win, "External Export", "Select an export file first.")
+                return
+            if text_source_checkbox.isChecked() and not os.path.isfile(text_source_path.text()):
+                QMessageBox.warning(setup_win, "External Export", "The selected export file does not exist.")
+                return
+            if text_source_checkbox.isChecked() and text_source_kind.currentData() == "jiten" and not os.path.isfile(jmdict_path.text()):
+                QMessageBox.warning(setup_win, "Jiten Backup Export", "Select the JMdict Yomitan ZIP first.")
+                return
+            if gsm_source_checkbox.isChecked() and gsm_source_path.text().strip() == "":
+                QMessageBox.warning(setup_win, "GSM CSV Export", "Select a GSM CSV file first.")
+                return
+            if gsm_source_checkbox.isChecked() and not os.path.isfile(gsm_source_path.text()):
+                QMessageBox.warning(setup_win, "GSM CSV Export", "The selected GSM CSV file does not exist.")
+                return
+            setup_win.accept()
+
+        generate_button = QPushButton("Generate", clicked = accept_if_valid)
         bottom_buttons_horizontal_layout.addWidget(generate_button)
         close_button = QPushButton("Close", clicked = setup_win.reject)
         bottom_buttons_horizontal_layout.addWidget(close_button)

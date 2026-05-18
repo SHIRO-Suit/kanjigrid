@@ -1,13 +1,205 @@
 import datetime
+import csv
+import json
+import math
 import operator
+import os
 import re
+import sys
 import types
 import urllib.parse
+import zipfile
 from functools import reduce
 
 from anki.utils import ids2str
 
 from . import data, util
+
+
+JITEN_INTERVAL_MARKER = 1000000
+GSM_ENCOUNTER_MARKER = 2000000
+EXTERNAL_SCORE_SCALE = 1000
+
+
+def valid_unit_key(config: types.SimpleNamespace, unit_key: str) -> bool:
+    return util.ignored_characters.find(unit_key) == -1 and (not config.kanjionly or util.is_kanji(unit_key))
+
+
+def contains_kanji(text: str) -> bool:
+    return any(util.is_kanji(ch) for ch in text)
+
+
+def external_unit_score(unit, config: types.SimpleNamespace) -> float:
+    if unit.avg_interval <= -GSM_ENCOUNTER_MARKER:
+        return min((abs(unit.avg_interval) - GSM_ENCOUNTER_MARKER) / EXTERNAL_SCORE_SCALE, 1)
+    if unit.avg_interval <= -JITEN_INTERVAL_MARKER:
+        interval = abs(unit.avg_interval) - JITEN_INTERVAL_MARKER
+        return util.score_adjust(interval / config.interval)
+    if unit.avg_interval < 0:
+        return min(abs(unit.avg_interval) / 5, 1)
+    return util.score_adjust(unit.avg_interval / config.interval)
+
+
+def add_textfile_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
+    source_path = getattr(config, "textsourcepath", "")
+    if not source_path or not os.path.isfile(source_path):
+        return units
+
+    counts = {}
+    first_seen = {}
+    with open(source_path, "r", encoding="utf-8-sig", errors="replace") as file_in:
+        for idx, line in enumerate(file_in, start=1):
+            word = line.strip()
+            if not word:
+                continue
+            for ch in set(word):
+                if not valid_unit_key(config, ch):
+                    continue
+                counts[ch] = counts.get(ch, 0) + 1
+                first_seen[ch] = min(first_seen.get(ch, idx), idx)
+
+    for ch, count in counts.items():
+        if anki_priority and ch in units:
+            continue
+        units[ch] = util.unit_tuple(first_seen[ch], ch, -float(count), count, 0)
+
+    return units
+
+
+def add_gsm_csv_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
+    source_path = getattr(config, "gsmsourcepath", "")
+    if not source_path or not os.path.isfile(source_path):
+        return units
+
+    field_limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(field_limit)
+            break
+        except OverflowError:
+            field_limit = int(field_limit / 10)
+
+    aggregate = {}
+    with open(source_path, "r", encoding="utf-8-sig", newline="", errors="replace") as csv_in:
+        reader = csv.DictReader(csv_in)
+        for idx, row in enumerate(reader, start=1):
+            word = (row.get("word") or "").strip()
+            if not word:
+                continue
+            try:
+                encounters = int(float(row.get("frequency") or 1))
+            except ValueError:
+                encounters = 1
+            encounters = max(encounters, 1)
+
+            for ch in set(word):
+                if not valid_unit_key(config, ch):
+                    continue
+                data = aggregate.setdefault(ch, {"idx": idx, "count": 0})
+                data["idx"] = min(data["idx"], idx)
+                data["count"] += encounters
+
+    if not aggregate:
+        return units
+
+    max_count = max(data["count"] for data in aggregate.values())
+    for ch, data in aggregate.items():
+        if anki_priority and ch in units:
+            continue
+        score = 1 if max_count <= 1 else (math.log1p(data["count"]) / math.log1p(max_count))
+        units[ch] = util.unit_tuple(
+            data["idx"],
+            ch,
+            -(GSM_ENCOUNTER_MARKER + (score * EXTERNAL_SCORE_SCALE)),
+            data["count"],
+            0,
+        )
+
+    return units
+
+
+def jmdict_cache_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "user_files", "jmdict_sequence_cache.json")
+
+
+def load_jmdict_sequence_map(config: types.SimpleNamespace) -> dict:
+    jmdict_path = getattr(config, "jmdictpath", "")
+    if not jmdict_path or not os.path.isfile(jmdict_path):
+        return {}
+
+    stat = os.stat(jmdict_path)
+    cache_path = jmdict_cache_path()
+    try:
+        with open(cache_path, "r", encoding="utf-8") as cache_in:
+            cache = json.load(cache_in)
+        if cache.get("source") == jmdict_path and cache.get("mtime") == stat.st_mtime and cache.get("size") == stat.st_size:
+            return {int(k): v for k, v in cache.get("mapping", {}).items()}
+    except Exception:  # noqa: BLE001
+        pass
+
+    mapping = {}
+    with zipfile.ZipFile(jmdict_path) as zip_in:
+        term_banks = sorted(name for name in zip_in.namelist() if name.startswith("term_bank_") and name.endswith(".json"))
+        for term_bank in term_banks:
+            entries = json.loads(zip_in.read(term_bank).decode("utf-8"))
+            for entry in entries:
+                if len(entry) > 6 and isinstance(entry[6], int):
+                    existing = mapping.get(entry[6])
+                    if existing is None or (not contains_kanji(existing) and contains_kanji(entry[0])):
+                        mapping[entry[6]] = entry[0]
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    try:
+        with open(cache_path, "w", encoding="utf-8") as cache_out:
+            json.dump({"source": jmdict_path, "mtime": stat.st_mtime, "size": stat.st_size, "mapping": mapping}, cache_out, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+    return mapping
+
+
+def add_jiten_backup_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
+    source_path = getattr(config, "textsourcepath", "")
+    if not source_path or not os.path.isfile(source_path):
+        return units
+
+    sequence_map = load_jmdict_sequence_map(config)
+    if not sequence_map:
+        return units
+
+    with open(source_path, "r", encoding="utf-8-sig") as backup_in:
+        backup = json.load(backup_in)
+
+    aggregate = {}
+    for idx, card in enumerate(backup.get("cards", []), start=1):
+        word = sequence_map.get(card.get("w"))
+        if not word:
+            continue
+
+        interval = card.get("st")
+        if interval is None:
+            interval = max((card.get("du", 0) - card.get("lr", 0)) / 86400, 1) if card.get("lr") and card.get("du") else 1
+
+        for ch in set(word):
+            if not valid_unit_key(config, ch):
+                continue
+            data = aggregate.setdefault(ch, {"idx": idx, "total": 0.0, "count": 0})
+            data["idx"] = min(data["idx"], idx)
+            data["total"] += float(interval)
+            data["count"] += 1
+
+    for ch, data in aggregate.items():
+        if anki_priority and ch in units:
+            continue
+        avg_interval = data["total"] / data["count"]
+        units[ch] = util.unit_tuple(data["idx"], ch, -(JITEN_INTERVAL_MARKER + avg_interval), data["count"], 0)
+
+    return units
+
+
+def textfile_grid(config: types.SimpleNamespace):
+    if getattr(config, "textsourcekind", "txt") == "jiten":
+        return add_jiten_backup_units({}, config)
+    return add_textfile_units({}, config)
 
 
 def get_grouping_overall_total(units_list: list, grouping: data.KanjiGrouping, config: types.SimpleNamespace) -> str:
@@ -38,6 +230,9 @@ def get_grouping_overall_total(units_list: list, grouping: data.KanjiGrouping, c
     return overall_total + within_grouping_total
 
 def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> str:
+    def unit_score(unit) -> float:
+        return external_unit_score(unit, config)
+
     def kanjitile(char: str, bgcolor: str, seen_cards_count: int = 0, unseen_cards_count: int = 0, avg_interval: int = 0) -> str:
         tile = ""
 
@@ -45,7 +240,14 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
 
         if config.tooltips:
             tooltip = "Character: %s" % util.safe_unicodedata_name(char)
-            if avg_interval:
+            if avg_interval <= -GSM_ENCOUNTER_MARKER:
+                tooltip += " | GSM Encounters: " + str(seen_cards_count)
+            elif avg_interval <= -JITEN_INTERVAL_MARKER:
+                interval = abs(avg_interval) - JITEN_INTERVAL_MARKER
+                tooltip += " | Jiten Avg Interval: " + str("{:.2f}".format(interval))
+            elif avg_interval < 0:
+                tooltip += " | TXT Words: " + str(abs(int(avg_interval)))
+            elif avg_interval:
                 tooltip += " | Avg Interval: " + str("{:.2f}".format(avg_interval)) + " | Score: " + str("{:.2f}".format(util.score_adjust(avg_interval / config.interval)))
             tooltip += " | Unseen: " + str(unseen_cards_count) + " | Seen: " + str(seen_cards_count)
             tile += "\t<div class=\"grid-item\" style=\"background:%s;\" title=\"%s\"%s>" % (bgcolor, tooltip, context_menu_events)
@@ -66,7 +268,9 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
         return tile
 
     deckname = "*"
-    if config.did != "*":
+    if getattr(config, "usetextsource", False):
+        deckname = os.path.basename(getattr(config, "textsourcepath", "")) or "TXT word list"
+    elif config.did != "*":
         deckname = mw.col.decks.name(config.did).rsplit("::", 1)[-1]
 
     result_html  = "<!doctype html><html lang=\"" + config.lang + "\"><head><meta charset=\"UTF-8\" /><title>Anki Kanji Grid</title>"
@@ -98,14 +302,26 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
     key_css_gradient += ")"
     result_html += "<span class=\"key\" style=\"background: " + key_css_gradient + "; width: 21em;\">&nbsp;</span>"
     result_html += "&nbsp;Strong</p></div>\n"
+    if getattr(config, "usetextsource", False):
+        external_key_css_gradient = "linear-gradient(90deg"
+        for i in range(0, gradient_key_step_count + 1):
+            external_key_css_gradient += "," + util.mute_hex_color(util.get_gradient_color_hex(i / gradient_key_step_count, config.gradientcolors))
+        external_key_css_gradient += ")"
+        result_html += "<p style=\"text-align: center;\">External&nbsp;<span class=\"key\" style=\"background: " + external_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;Stronger</p>\n"
+    if getattr(config, "usegsmsource", False):
+        gsm_key_css_gradient = "linear-gradient(90deg"
+        for i in range(0, gradient_key_step_count + 1):
+            gsm_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, ["#f0edf6", "#8a5fb5"])
+        gsm_key_css_gradient += ")"
+        result_html += "<p style=\"text-align: center;\">GSM encounters&nbsp;<span class=\"key\" style=\"background: " + gsm_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More encounters</p>\n"
     result_html += "<hr style=\"border-style: dashed;border-color: #666;width: 100%;\">\n"
     result_html += "<div style=\"text-align: center;\">\n"
 
     units_list = {
         util.SortOrder.NONE:      sorted(units.values(), key=lambda unit: (unit.idx, unit.seen_cards_count)),
         util.SortOrder.UNICODE:   sorted(units.values(), key=lambda unit: (util.safe_unicodedata_name(unit.value), unit.seen_cards_count)),
-        util.SortOrder.SCORE:     sorted(units.values(), key=lambda unit: (util.score_adjust(unit.avg_interval / config.interval), unit.seen_cards_count), reverse=True),
-        util.SortOrder.SEEN_CARDS_COUNT: sorted(units.values(), key=lambda unit: (unit.seen_cards_count, util.score_adjust(unit.avg_interval / config.interval)), reverse=True),
+        util.SortOrder.SCORE:     sorted(units.values(), key=lambda unit: (unit_score(unit), unit.seen_cards_count), reverse=True),
+        util.SortOrder.SEEN_CARDS_COUNT: sorted(units.values(), key=lambda unit: (unit.seen_cards_count, unit_score(unit)), reverse=True),
         util.SortOrder.UNSEEN_CARDS_COUNT:  sorted(units.values(), key=lambda unit: (unit.unseen_cards_count), reverse=True),
     }[util.SortOrder(config.sortby)]
 
@@ -225,6 +441,12 @@ def timetravel(card, revlog, timetravel_time):
     return True
 
 def kanjigrid(mw, config: types.SimpleNamespace):
+    if getattr(config, "usetextsource", False) and not getattr(config, "mixtextsource", False):
+        units = textfile_grid(config)
+        if getattr(config, "usegsmsource", False):
+            add_gsm_csv_units(units, config, anki_priority=True)
+        return units
+
     dids = [config.did]
     if config.did == "*":
         dids = mw.col.decks.all_ids()
@@ -265,6 +487,13 @@ def kanjigrid(mw, config: types.SimpleNamespace):
         if unit_key is not None:
             for ch in unit_key:
                 util.add_unit_data(units, ch, i, card, config.kanjionly)
+    if getattr(config, "usetextsource", False) and getattr(config, "mixtextsource", False):
+        if getattr(config, "textsourcekind", "txt") == "jiten":
+            add_jiten_backup_units(units, config, anki_priority=True)
+        else:
+            add_textfile_units(units, config, anki_priority=True)
+    if getattr(config, "usegsmsource", False):
+        add_gsm_csv_units(units, config, anki_priority=True)
     return units
 
 HEADER_CSS_SNIPPET = lambda config: ("""

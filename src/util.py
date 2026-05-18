@@ -80,6 +80,16 @@ def hex_to_rgb(hex_string: str) -> (int, int, int):
 def rgb_to_hex(r: int, g: int, b: int) -> str:
     return f"#{r:02X}{g:02X}{b:02X}"
 
+def mute_hex_color(hex_string: str) -> str:
+    r, g, b = hex_to_rgb(hex_string)
+    gray = round((r + g + b) / 3)
+    mix = 0.55
+    lighten = 32
+    muted_r = round((r * (1 - mix)) + (gray * mix) + lighten)
+    muted_g = round((g * (1 - mix)) + (gray * mix) + lighten)
+    muted_b = round((b * (1 - mix)) + (gray * mix) + lighten)
+    return rgb_to_hex(min(muted_r, 255), min(muted_g, 255), min(muted_b, 255))
+
 def get_gradient_color_hex(score, gradient_colors) -> str:
     max_color_index = len(gradient_colors) - 1
 
@@ -100,6 +110,17 @@ def get_gradient_color_hex(score, gradient_colors) -> str:
     return rgb_to_hex(r, g, b)
 
 def get_background_color(avg_interval, config_interval, count, gradient_colors, kanjitileunseencolor) -> str:
+    if avg_interval < 0:
+        if avg_interval <= -2000000:
+            score = min((abs(avg_interval) - 2000000) / 1000, 1)
+            return get_gradient_color_hex(score, ["#f0edf6", "#8a5fb5"])
+        if avg_interval <= -1000000:
+            interval = abs(avg_interval) - 1000000
+            score = score_adjust(interval / config_interval)
+        else:
+            word_count = abs(avg_interval)
+            score = min(word_count / 5, 1)
+        return mute_hex_color(get_gradient_color_hex(score, gradient_colors))
     if count != 0:
         return get_gradient_color_hex(score_adjust(avg_interval / config_interval), gradient_colors)
     return kanjitileunseencolor
@@ -159,6 +180,8 @@ def safe_unicodedata_name(char: str, default: str = "") -> str:
         return default
 
 def get_deck_name(mw, config: types.SimpleNamespace) -> str:
+    if getattr(config, "usetextsource", False):
+        return getattr(config, "textsourcepath", "") or "TXT word list"
     deckname = config.did
     if config.did != "*":
         deckname = mw.col.decks.name(config.did)
