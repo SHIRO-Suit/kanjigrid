@@ -133,7 +133,8 @@ When a grouping is selected, each group block can expose study actions for kanji
 - Persistent study decks are named `unseen kanjis from grid group "Group Name"`.
 - Temporary study decks are named `Temp - unseen kanjis from grid group "Group Name"` and are cleaned up when temporary study mode is enabled.
 
-[!NOTE] There is no guarantee the decks only contain cards that exatly match the group you selected, TMW Quiz, JLPT Levels etc.. It fetches ALL WORDS that contain the kanjis listed in these groups. 
+> [!NOTE]
+> There is no guarantee the decks will only contain cards that exatly match the group you selected, TMW Quiz, JLPT Levels etc.. It fetches ALL WORDS that contain the kanjis listed in these groups. 
 
 The `Decks` tab lists tracked Kanji Grid study decks and includes `Update All Decks`.
 
