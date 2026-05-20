@@ -15,6 +15,7 @@ from aqt.qt import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTimer,
@@ -27,6 +28,7 @@ from aqt.qt import (
     QWidget,
     qconnect,
 )
+from aqt.utils import openLink
 from aqt.webview import AnkiWebView
 
 from . import config_util, data, generate_grid, save, util, webview_util
@@ -35,11 +37,24 @@ from . import config_util, data, generate_grid, save, util, webview_util
 class KanjiGrid:
     def __init__(self, mw: main.AnkiQt) -> None:
         if mw:
-            self.menuAction = QAction("Generate Kanji Grid", mw, triggered=self.setup)
+            self.menu = QMenu("Kanji Grid", mw)
+            self.setupAction = QAction("Create / Configure Grid...", mw, triggered=self.setup)
+            self.regenerateAction = QAction("Regenerate Last Grid", mw, triggered=self.regenerate_last_grid)
+            self.updateDecksAction = QAction("Update Study Decks", mw, triggered=self.update_study_decks_from_menu)
+            self.addonUpdateAction = QAction("Addon Update", mw, triggered=self.open_addon_update_page)
+            self.menu.addAction(self.setupAction)
+            self.menu.addAction(self.regenerateAction)
+            self.menu.addSeparator()
+            self.menu.addAction(self.updateDecksAction)
+            self.menu.addSeparator()
+            self.menu.addAction(self.addonUpdateAction)
+            self.menu.aboutToShow.connect(self.update_menu_actions)
+            self.update_menu_actions()
             mw.form.menuTools.addSeparator()
-            mw.form.menuTools.addAction(self.menuAction)
+            mw.form.menuTools.addMenu(self.menu)
             gui_hooks.reviewer_will_end.append(lambda *args: QTimer.singleShot(500, webview_util.cleanup_temp_study_deck))
             gui_hooks.profile_will_close.append(lambda *args: webview_util.cleanup_temp_study_deck())
+            gui_hooks.profile_will_close.append(webview_util.reset_study_deck_runtime_state)
             if hasattr(gui_hooks, "add_cards_did_add_note"):
                 gui_hooks.add_cards_did_add_note.append(webview_util.update_study_decks_for_added_note_hook)
             if hasattr(hooks, "note_will_be_added"):
@@ -119,6 +134,64 @@ class KanjiGrid:
         if units is not None:
             self.displaygrid(config, util.get_deck_name(mw, config), units)
 
+    def prepare_saved_grid_config(self) -> types.SimpleNamespace:
+        config = types.SimpleNamespace(**config_util.get_config(mw))
+        if getattr(config, "defaultdeck", "") == "*":
+            config.did = "*"
+        elif getattr(config, "defaultdeck", ""):
+            selected_deck_info = mw.col.decks.by_name(config.defaultdeck)
+            config.did = selected_deck_info["id"] if selected_deck_info else "*"
+        else:
+            config.did = mw.col.conf["curDeck"]
+        config.fieldslist = shlex.split(getattr(config, "defaultfield", "").lower())
+        config.timetravel_enabled = False
+        config.timetravel_time = 0
+        return config
+
+    def has_saved_grid_config(self) -> bool:
+        config = types.SimpleNamespace(**config_util.get_config(mw))
+        default_deck = getattr(config, "defaultdeck", "").strip()
+        default_field = getattr(config, "defaultfield", "").strip()
+        if default_deck == "" or default_field == "":
+            return False
+        if default_deck != "*" and mw.col.decks.by_name(default_deck) is None:
+            return False
+        return True
+
+    def update_menu_actions(self) -> None:
+        self.regenerateAction.setEnabled(self.has_saved_grid_config())
+
+    def regenerate_last_grid(self) -> None:
+        if not self.has_saved_grid_config():
+            QMessageBox.information(
+                mw,
+                "Kanji Grid",
+                "No saved grid settings found yet. Open Create / Configure Grid first and generate or save settings.",
+            )
+            return
+        previous_win = getattr(self, "win", None)
+        mw.progress.start(immediate=True)
+        try:
+            config = self.prepare_saved_grid_config()
+            data.init_groups()
+            self.makegrid(config)
+        except Exception as exception:  # noqa: BLE001
+            QMessageBox.critical(mw, "Kanji Grid", "Failed to regenerate last grid:\n" + str(exception))
+        finally:
+            mw.progress.finish()
+        if getattr(self, "win", None) is not None and self.win is not previous_win:
+            self.win.show()
+
+    def update_study_decks_from_menu(self) -> None:
+        mw.progress.start(immediate=True)
+        try:
+            webview_util.update_existing_study_decks_with_tooltip()
+        finally:
+            mw.progress.finish()
+
+    def open_addon_update_page(self) -> None:
+        openLink("https://github.com/SHIRO-Suit/kanjigrid/releases/latest")
+
     def setup(self) -> None:
         config = types.SimpleNamespace(**config_util.get_config(mw))
         config.did = mw.col.conf["curDeck"]
@@ -132,6 +205,48 @@ class KanjiGrid:
             else:
                 config.did = "*"
                 deckcb.setCurrentText("*")
+
+        def selected_deck_ids() -> list:
+            if config.did == "*":
+                return []
+            try:
+                deck_id = int(config.did)
+            except (TypeError, ValueError):
+                selected_deck_info = mw.col.decks.by_name(str(config.did))
+                if not selected_deck_info:
+                    return []
+                deck_id = int(selected_deck_info["id"])
+
+            dids = [deck_id]
+            seen = {deck_id}
+            index = 0
+            while index < len(dids):
+                current_deck_id = dids[index]
+                for _, child_id in mw.col.decks.children(int(current_deck_id)):
+                    child_id = int(child_id)
+                    if child_id not in seen:
+                        dids.append(child_id)
+                        seen.add(child_id)
+                index += 1
+            return dids
+
+        def model_ids_for_selected_deck() -> list:
+            if config.did == "*":
+                return mw.col.db.list("select distinct n.mid from notes n join cards c on c.nid = n.id")
+
+            dids = selected_deck_ids()
+            if not dids:
+                return []
+            return mw.col.db.list(
+                "select distinct n.mid from notes n join cards c on c.nid = n.id "
+                "where c.did in %s or c.odid in %s"
+                % (generate_grid.ids2str(dids), generate_grid.ids2str(dids)),
+            )
+
+        def searchable_field_name(field_name: str) -> str:
+            if len(field_name.split()) > 1:
+                return "\"" + field_name + "\""
+            return field_name
 
         data.init_groups()
 
@@ -170,28 +285,18 @@ class KanjiGrid:
         field = QComboBox()
         field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         def update_fields_dropdown(deckname: str) -> None:
-            if deckname != "*":
-                deckname = mw.col.decks.get(config.did)["name"]
             new_text = set()
             field_names = []
-            for item in mw.col.models.all_names_and_ids():
-                model_id_name = str(item).replace("id: ", "").replace("name: ", "").replace("\"", "").split("\n")
-                # Anki backend will return incorrectly escaped strings that need to be stripped of `\`. However, `"`, `*`, and `_` should not be stripped
-                model_name = model_id_name[1].replace("\\", "").replace("*", "\\*").replace("_", "\\_").replace("\"", "\\\"")
-                if len(mw.col.find_cards("\"note:" + model_name + "\" " + "\"deck:" + deckname + "\"")) > 0:
-                    model_id = model_id_name[0]
-                    model_fields = mw.col.models.get(model_id)["flds"]
-                    for field_dict in model_fields:
-                        field_dict_name = field_dict["name"]
-                        if len(field_dict_name.split()) > 1:
-                            field_dict_name = "\"" + field_dict_name + "\""
-                        field_names.append(field_dict_name)
+            for model_id in model_ids_for_selected_deck():
+                model = mw.col.models.get(model_id)
+                if not model:
+                    continue
+                model_fields = model["flds"]
+                for field_dict in model_fields:
+                    field_names.append(searchable_field_name(field_dict["name"]))
 
-                    if len(model_fields) > 0:
-                        first_field_name = model_fields[0]["name"]
-                        if len(first_field_name.split()) > 1:
-                            first_field_name = "\"" + first_field_name + "\""
-                        new_text.add(first_field_name)
+                if len(model_fields) > 0:
+                    new_text.add(searchable_field_name(model_fields[0]["name"]))
             field.clear()
             field.addItems(field_names)
             if config.defaultfield != "":
@@ -289,13 +394,13 @@ class KanjiGrid:
         gsm_source_layout.setContentsMargins(20, 0, 0, 0)
         external_source_layout.addLayout(gsm_source_layout)
 
-        gsm_api_detected = generate_grid.gsm_api_available()
-        gsm_api_status = QLabel("GSM API detected at http://localhost:7275" if gsm_api_detected else "GSM API not detected")
+        gsm_api_detected = False
+        gsm_api_status = QLabel("Checking GSM API at http://localhost:7275...")
         gsm_api_status.setStyleSheet("color: gray")
         gsm_source_layout.addWidget(gsm_api_status)
 
         gsm_api_checkbox = QCheckBox("Use GSM API")
-        gsm_api_checkbox.setChecked(gsm_api_detected and getattr(config, "usegsmapi", True))
+        gsm_api_checkbox.setChecked(False)
         gsm_source_layout.addWidget(gsm_api_checkbox)
 
         gsm_source_horizontal_layout = QHBoxLayout()
@@ -348,6 +453,18 @@ class KanjiGrid:
         gsm_source_checkbox.toggled.connect(lambda _: update_external_source_controls())
         gsm_api_checkbox.toggled.connect(lambda _: update_external_source_controls())
         update_external_source_controls()
+
+        def check_gsm_api_after_open() -> None:
+            nonlocal gsm_api_detected
+            gsm_api_detected = generate_grid.gsm_api_available()
+            gsm_api_status.setText(
+                "GSM API detected at http://localhost:7275" if gsm_api_detected else "GSM API not detected"
+            )
+            gsm_api_checkbox.setEnabled(gsm_api_detected)
+            gsm_api_checkbox.setChecked(gsm_api_detected and getattr(config, "usegsmapi", True))
+            update_external_source_controls()
+
+        QTimer.singleShot(0, check_gsm_api_after_open)
 
         groupby = QComboBox()
         groupby.addItems([
@@ -446,7 +563,13 @@ class KanjiGrid:
                 config.defaultdeck = deckcb.currentText()
                 config.defaultfield = field.currentText()
                 config.groupby = groupby.currentIndex()
-                config.lang = pagelang.currentText()
+            config.lang = pagelang.currentText()
+            config.usequerystudydeck = use_query_study_deck.isChecked()
+            config.splitbigdynamicqueries = split_big_dynamic_queries.isChecked()
+            config.studydeckbatchsize = study_deck_batch_size.value()
+            config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
+            config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
+            config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
             config.searchfilter = search_filter.text()
             config.interval = strong_interval.value()
             config.groupby = groupby.currentIndex()
@@ -473,6 +596,12 @@ class KanjiGrid:
             saved_config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
             saved_config.usegsmsource = gsm_selected
             saved_config.gsmsourcepath = gsm_source_path.text()
+            saved_config.usequerystudydeck = use_query_study_deck.isChecked()
+            saved_config.splitbigdynamicqueries = split_big_dynamic_queries.isChecked()
+            saved_config.studydeckbatchsize = study_deck_batch_size.value()
+            saved_config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
+            saved_config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
+            saved_config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
             saved_config.saveselection = save_selection.isChecked()
             if save_selection.isChecked():
                 saved_config.defaultdeck = deckcb.currentText()
@@ -544,16 +673,6 @@ class KanjiGrid:
 
         data_tab_vertical_layout.addWidget(QLabel("Manage settings:"))
 
-        update_study_decks_button = QPushButton("Update Study Decks")
-
-        def update_study_decks() -> None:
-            new_config = set_config_attributes(config)
-            config_util.set_config(mw, new_config)
-            webview_util.update_existing_study_decks_with_tooltip(new_config)
-
-        update_study_decks_button.clicked.connect(lambda _: update_study_decks())
-        data_tab_vertical_layout.addWidget(update_study_decks_button)
-
         save_selection = QCheckBox("Save selection")
         save_selection.setChecked(getattr(config, "saveselection", True))
         data_tab_vertical_layout.addWidget(save_selection)
@@ -579,6 +698,99 @@ class KanjiGrid:
         data_tab.setLayout(data_tab_vertical_layout)
         data_tab_scroll_area.setWidget(data_tab)
         tabs_frame.addTab(data_tab_scroll_area, "Data")
+
+        # Decks Tab
+        decks_tab = QWidget()
+        decks_tab_scroll_area = QScrollArea()
+        decks_tab_scroll_area.setWidgetResizable(True)
+        decks_tab_vertical_layout = QVBoxLayout()
+        decks_tab_vertical_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        decks_tab_vertical_layout.addWidget(QLabel("Tracked Kanji Grid study decks:"))
+        tracked_decks_label = QLabel()
+        tracked_decks_label.setWordWrap(True)
+        tracked_decks_label.setText("Tracked decks will be loaded when this tab is opened.")
+        decks_tab_vertical_layout.addWidget(tracked_decks_label)
+        tracked_decks_loaded = False
+
+        def refresh_tracked_decks_list() -> None:
+            nonlocal tracked_decks_loaded
+            summaries = webview_util.tracked_study_deck_summaries()
+            if summaries:
+                tracked_decks_label.setText("\n".join(summaries))
+            else:
+                tracked_decks_label.setText("No Kanji Grid study decks found.")
+            tracked_decks_loaded = True
+
+        update_study_decks_button = QPushButton("Update All Decks")
+
+        def update_study_decks() -> None:
+            new_config = set_config_attributes(config)
+            config_util.set_config(mw, new_config)
+            webview_util.update_existing_study_decks_with_tooltip(new_config)
+            refresh_tracked_decks_list()
+
+        update_study_decks_button.clicked.connect(lambda _: update_study_decks())
+        decks_tab_vertical_layout.addWidget(update_study_decks_button)
+
+        study_deck_batch_size_layout = QHBoxLayout()
+        study_deck_batch_size_layout.addWidget(QLabel("Study batch size:"))
+        study_deck_batch_size = QSpinBox()
+        study_deck_batch_size.setMinimum(1)
+        study_deck_batch_size.setMaximum(9999)
+        study_deck_batch_size.setValue(max(1, int(getattr(config, "studydeckbatchsize", 10))))
+        study_deck_batch_size_layout.addWidget(study_deck_batch_size)
+        decks_tab_vertical_layout.addLayout(study_deck_batch_size_layout)
+
+        update_study_deck_batch_size = QCheckBox("Apply current batch size when updating decks")
+        update_study_deck_batch_size.setChecked(getattr(config, "updatestudydeckbatchsize", False))
+        decks_tab_vertical_layout.addWidget(update_study_deck_batch_size)
+
+        use_query_study_deck = QCheckBox("Use dynamic query decks")
+        use_query_study_deck.setChecked(getattr(config, "usequerystudydeck", True))
+        decks_tab_vertical_layout.addWidget(use_query_study_deck)
+        dynamic_query_note = QLabel("This allows rebuilds on mobile and PCs without the add-on, but can be slower on big decks. If Anki rejects the query size, Kanji Grid falls back to a static card-id deck.")
+        dynamic_query_note.setWordWrap(True)
+        decks_tab_vertical_layout.addWidget(dynamic_query_note)
+
+        split_big_dynamic_queries = QCheckBox("EXPERIMENTAL Separate big dynamic queries in multiple decks")
+        split_big_dynamic_queries.setChecked(getattr(config, "splitbigdynamicqueries", False))
+        decks_tab_vertical_layout.addWidget(split_big_dynamic_queries)
+
+        rebuild_study_decks_on_note_add = QCheckBox("Update/rebuild study decks when a note is added")
+        rebuild_study_decks_on_note_add.setChecked(getattr(config, "rebuildstudydecksonnoteadd", False))
+        decks_tab_vertical_layout.addWidget(rebuild_study_decks_on_note_add)
+
+        update_study_decks_on_collection_load = QCheckBox("Update/rebuild study decks on startup and after sync reloads")
+        update_study_decks_on_collection_load.setChecked(getattr(config, "updatestudydecksonstartup", True))
+        decks_tab_vertical_layout.addWidget(update_study_decks_on_collection_load)
+
+        def save_deck_preferences() -> None:
+            saved_config = types.SimpleNamespace(**config_util.get_config(mw))
+            saved_config.usequerystudydeck = use_query_study_deck.isChecked()
+            saved_config.splitbigdynamicqueries = split_big_dynamic_queries.isChecked()
+            saved_config.studydeckbatchsize = study_deck_batch_size.value()
+            saved_config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
+            saved_config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
+            saved_config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
+            config_util.set_config(mw, saved_config)
+
+        study_deck_batch_size.valueChanged.connect(lambda _: save_deck_preferences())
+        update_study_deck_batch_size.toggled.connect(lambda _: save_deck_preferences())
+        use_query_study_deck.toggled.connect(lambda _: save_deck_preferences())
+        split_big_dynamic_queries.toggled.connect(lambda _: save_deck_preferences())
+        rebuild_study_decks_on_note_add.toggled.connect(lambda _: save_deck_preferences())
+        update_study_decks_on_collection_load.toggled.connect(lambda _: save_deck_preferences())
+
+        decks_tab.setLayout(decks_tab_vertical_layout)
+        decks_tab_scroll_area.setWidget(decks_tab)
+        decks_tab_index = tabs_frame.addTab(decks_tab_scroll_area, "Decks")
+
+        def refresh_decks_tab_if_needed(index: int) -> None:
+            if index == decks_tab_index and not tracked_decks_loaded:
+                refresh_tracked_decks_list()
+
+        tabs_frame.currentChanged.connect(refresh_decks_tab_if_needed)
 
         #Bottom Buttons
         bottom_buttons_horizontal_layout = QHBoxLayout()

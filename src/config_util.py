@@ -118,11 +118,26 @@ config_schema = {
     "makestudydecktemporary": {
         "default": True,
     },
+    "usequerystudydeck": {
+        "default": True,
+    },
+    "splitbigdynamicqueries": {
+        "default": False,
+    },
+    "studydeckbatchsize": {
+        "default": 10,
+    },
+    "updatestudydeckbatchsize": {
+        "default": False,
+    },
     "updatestudydecksonstartup": {
         "default": True,
     },
     "updatestudydecksonnoteadd": {
         "default": True,
+    },
+    "rebuildstudydecksonnoteadd": {
+        "default": False,
     },
     "studydecklastnoteid": {
         "default": 0,
