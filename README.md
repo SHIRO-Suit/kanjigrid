@@ -144,6 +144,8 @@ The `Decks` tab lists tracked Kanji Grid study decks and includes `Update All De
 
 The `Study batch size` setting controls the filtered deck's `Limit to` value when it is created. The default is `10`.
 
+`Make Study Now decks temporary` makes `Study now` open a temporary filtered deck instead of creating a persistent study deck.
+
 When pressing `Update All Decks`: 
  - Cards that are in "learning" are returned to their original deck with the learning state preserved (anki default behavior).
  - if `Apply current batch size when updating decks` is toggled, changes the decks ­`limit to` value to the global one. this exists so that user set limits can be kept.
