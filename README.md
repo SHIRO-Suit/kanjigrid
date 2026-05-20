@@ -3,7 +3,7 @@
 This is a personal fork of [Kanji Grid Kuuube](https://github.com/Kuuuube/kanjigrid), which is itself an improved version of the older Kanji Grid add-on for Anki.
 
 The goal of this fork is to allow including external sources of known data that are not in anki for any reason, mainly for having been acquired without the need of mining. 
-
+It now also supports creating decks from unseen cards from groups in the grid. 
 ![Screenshot1](./grid.png)
 ![Screenshot2](./new_legend.png)
 
