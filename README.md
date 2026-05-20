@@ -3,7 +3,7 @@
 This is a personal fork of [Kanji Grid Kuuube](https://github.com/Kuuuube/kanjigrid), which is itself an improved version of the older Kanji Grid add-on for Anki.
 
 The goal of this fork is to allow including external sources of known data that are not in anki for any reason, mainly for having been acquired without the need of mining. 
-
+It now also supports creating decks from unseen cards from groups in the grid. 
 ![Screenshot1](./grid.png)
 ![Screenshot2](./new_legend.png)
 
@@ -133,7 +133,8 @@ When a grouping is selected, each group block can expose study actions for kanji
 - Persistent study decks are named `unseen kanjis from grid group "Group Name"`.
 - Temporary study decks are named `Temp - unseen kanjis from grid group "Group Name"` and are cleaned up when temporary study mode is enabled.
 
-[!NOTE] There is no guarantee the decks only contain cards that exatly match the group you selected, TMW Quiz, JLPT Levels etc.. It fetches ALL WORDS that contain the kanjis listed in these groups. 
+> [!NOTE]
+> There is no guarantee the decks will only contain cards that exatly match the group you selected, TMW Quiz, JLPT Levels etc.. It fetches ALL WORDS that contain the kanjis listed in these groups. 
 
 The `Decks` tab lists tracked Kanji Grid study decks and includes `Update All Decks`.
 
