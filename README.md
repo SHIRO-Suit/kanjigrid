@@ -40,6 +40,8 @@ For general Kanji Grid usage, read the original project documentation:
 
 Anki always has priority. If a kanji is already present in the selected Anki cards, the tile keeps the normal Anki-based color. External sources only fill in kanji that are missing from the Anki-derived grid.
 
+The `Data` tab has a `Save selection` checkbox, enabled by default. When enabled, the add-on remembers the selected deck, fields, grouping, and language so study decks can be updated later without reopening the setup window.
+
 ## External Sources
 
 ### Plain TXT Export
@@ -119,6 +121,51 @@ Priority order:
 
 That means Anki colors are never overwritten by external sources. Jiten/TXT can fill missing kanji after Anki. GSM can then fill anything still missing.
 
+## Group Study Decks
+
+When a grouping is selected, each group block can expose study actions for kanji that are present in Anki but still unseen.
+
+- `Create deck` creates or updates a persistent filtered deck for that group, refreshes Anki's deck list, and keeps the Kanji Grid popup open.
+- `Study now` creates or updates the same persistent deck if it already exists, otherwise it follows the temporary-study behavior controlled by the add-on config.
+- Persistent study decks are named `unseen kanjis from grid group "Group Name"`.
+- Temporary study decks are named `Temp - unseen kanjis from grid group "Group Name"` and are cleaned up when temporary study mode is enabled.
+
+The `Data` tab includes `Update Study Decks`, which rebuilds existing Kanji Grid study decks using the current setup selections.
+
+The add-on can also update existing study decks automatically:
+
+- on Anki startup
+- when a new note is added, including lower-level add flows such as Yomitan
+
+For Yomitan/AnkiConnect workflows, the add-on also runs a lightweight collection watcher so new notes can be detected even when Anki's normal add-card UI hooks are bypassed. Automatic note-add updates are incremental: they append newly added card IDs to the first matching existing study deck instead of rebuilding every study deck.
+
+Automatic updates use Anki cards only. External Jiten, TXT, and GSM sources are ignored for study deck membership because a study deck can only contain Anki cards.
+
+These behaviors can be configured from the add-on config JSON:
+
+```json
+{
+  "makestudydecktemporary": true,
+  "updatestudydecksonstartup": true,
+  "updatestudydecksonnoteadd": true
+}
+```
+
+## Added Features
+
+- External source overlay for plain TXT word lists.
+- Jiten backup JSON support using a JMdict/Yomitan ZIP to resolve word IDs.
+- Jiten API support with a saved password-style token field.
+- GSM local API support with CSV fallback.
+- Mixed-source grid generation with Anki priority.
+- Muted Anki-style gradient for Jiten/TXT data.
+- Separate GSM encounter gradient and legend.
+- Setup UI sections that hide file selectors when API mode is active.
+- Saved setup selection for deck, fields, grouping, and language.
+- Per-group filtered study deck creation.
+- Direct `Study now` action from group blocks.
+- Optional temporary study deck cleanup.
+- Startup and note-add automatic refresh for existing Kanji Grid study decks.
 
 ## Upstream Documentation
 

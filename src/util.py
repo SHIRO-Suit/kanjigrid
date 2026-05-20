@@ -4,7 +4,7 @@ import re
 import types
 import unicodedata
 
-unit_tuple = collections.namedtuple("unit", "idx value avg_interval seen_cards_count unseen_cards_count")
+unit_tuple = collections.namedtuple("unit", "idx value avg_interval seen_cards_count unseen_cards_count unseen_card_ids")
 
 class SortOrder(enum.Enum):
     NONE = 0
@@ -48,7 +48,7 @@ def add_unit_data(units, unit_key, i, card, kanjionly) -> None:
     valid_key = ignored_characters.find(unit_key) == -1 and (not kanjionly or is_kanji(unit_key))
     if valid_key:
         if unit_key not in units:
-            unit = unit_tuple(0, unit_key, 0.0, 0, 0)
+            unit = unit_tuple(0, unit_key, 0.0, 0, 0, ())
             units[unit_key] = unit
         units[unit_key] = add_data_from_card(units[unit_key], i, card)
 
@@ -57,6 +57,7 @@ def add_data_from_card(unit, idx, card):
     new_avg_interval = unit.avg_interval
     seen_cards_count = unit.seen_cards_count
     unseen_cards_count = unit.unseen_cards_count
+    unseen_card_ids = unit.unseen_card_ids
 
     if card.type > 0:
         new_total = (unit.avg_interval * unit.seen_cards_count) + card.ivl
@@ -64,11 +65,12 @@ def add_data_from_card(unit, idx, card):
         new_avg_interval = new_total / seen_cards_count
     else:
         unseen_cards_count = unit.unseen_cards_count + 1
+        unseen_card_ids = unit.unseen_card_ids + (card.id,)
 
     if new_idx < unit.idx or unit.idx == 0:
         new_idx = idx
 
-    return unit_tuple(new_idx, unit.value, new_avg_interval, seen_cards_count, unseen_cards_count)
+    return unit_tuple(new_idx, unit.value, new_avg_interval, seen_cards_count, unseen_cards_count, unseen_card_ids)
 
 def hex_to_rgb(hex_string: str) -> (int, int, int):
     try:
@@ -158,6 +160,12 @@ def get_search(config: types.SimpleNamespace, char: str) -> str:
 
 def get_browse_command(char: str) -> str:
     return "javascript:bridgeCommand('" + char + "');"
+
+def get_study_command(group_index: int) -> str:
+    return "javascript:bridgeCommand('study:" + str(group_index) + "');"
+
+def get_create_study_deck_command(group_index: int) -> str:
+    return "javascript:bridgeCommand('createstudy:" + str(group_index) + "');"
 
 def fields_to_query(fields: list) -> str:
     query_strings = []

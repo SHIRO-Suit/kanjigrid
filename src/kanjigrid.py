@@ -2,6 +2,7 @@ import shlex
 import os
 import types
 
+from anki import hooks
 from aqt import gui_hooks, main, mw
 from aqt.qt import (
     QAction,
@@ -16,6 +17,7 @@ from aqt.qt import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTimer,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -36,8 +38,31 @@ class KanjiGrid:
             self.menuAction = QAction("Generate Kanji Grid", mw, triggered=self.setup)
             mw.form.menuTools.addSeparator()
             mw.form.menuTools.addAction(self.menuAction)
+            gui_hooks.reviewer_will_end.append(lambda *args: QTimer.singleShot(500, webview_util.cleanup_temp_study_deck))
+            gui_hooks.profile_will_close.append(lambda *args: webview_util.cleanup_temp_study_deck())
+            if hasattr(gui_hooks, "add_cards_did_add_note"):
+                gui_hooks.add_cards_did_add_note.append(webview_util.update_study_decks_for_added_note_hook)
+            if hasattr(hooks, "note_will_be_added"):
+                hooks.note_will_be_added.append(webview_util.update_study_decks_for_added_note_hook)
+            if hasattr(gui_hooks, "collection_did_load"):
+                gui_hooks.collection_did_load.append(webview_util.schedule_existing_study_decks_startup_update)
+                gui_hooks.collection_did_load.append(webview_util.start_study_deck_note_watcher)
+            webview_util.schedule_existing_study_decks_startup_update()
+            QTimer.singleShot(8000, webview_util.start_study_deck_note_watcher)
 
     def link_handler(self, link: str, config: types.SimpleNamespace, deckname: str) -> None:
+        if link.startswith("createstudy:"):
+            group_index_text = link[12:]
+            webview_util.on_create_study_deck_cmd(group_index_text, config, self.study_units)
+            return
+
+        if link.startswith("study:"):
+            group_index_text = link[6:]
+            study_units = self.study_units
+            self.win.reject()
+            QTimer.singleShot(100, lambda: webview_util.on_study_cmd(group_index_text, config, study_units))
+            return
+
         link_prefix = link[:2]
         link_suffix = link[2:]
         if link_prefix == "h:":
@@ -55,6 +80,7 @@ class KanjiGrid:
         current_win = self.win
         self.wv = webview_util.init_webview()
         current_wv = self.wv
+        self.study_units = units
 
         def on_window_close(current_wv: AnkiWebView) -> None:
             current_wv.cleanup()
@@ -415,10 +441,12 @@ class KanjiGrid:
             config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
             config.usegsmsource = gsm_selected
             config.gsmsourcepath = gsm_source_path.text()
-            if save_defaultdeck.isChecked():
+            config.saveselection = save_selection.isChecked()
+            if save_selection.isChecked():
                 config.defaultdeck = deckcb.currentText()
-            if save_defaultfield.isChecked():
                 config.defaultfield = field.currentText()
+                config.groupby = groupby.currentIndex()
+                config.lang = pagelang.currentText()
             config.searchfilter = search_filter.text()
             config.interval = strong_interval.value()
             config.groupby = groupby.currentIndex()
@@ -445,6 +473,12 @@ class KanjiGrid:
             saved_config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
             saved_config.usegsmsource = gsm_selected
             saved_config.gsmsourcepath = gsm_source_path.text()
+            saved_config.saveselection = save_selection.isChecked()
+            if save_selection.isChecked():
+                saved_config.defaultdeck = deckcb.currentText()
+                saved_config.defaultfield = field.currentText()
+                saved_config.groupby = groupby.currentIndex()
+                saved_config.lang = pagelang.currentText()
             config_util.set_config(mw, saved_config)
 
         data_tab_vertical_layout.addWidget(QLabel("Save grid without rendering:"))
@@ -510,16 +544,19 @@ class KanjiGrid:
 
         data_tab_vertical_layout.addWidget(QLabel("Manage settings:"))
 
-        save_options_horizontal_layout = QHBoxLayout()
-        data_tab_vertical_layout.addLayout(save_options_horizontal_layout)
+        update_study_decks_button = QPushButton("Update Study Decks")
 
-        save_defaultdeck = QCheckBox("Save deck")
-        save_defaultdeck.setChecked(False)
-        save_options_horizontal_layout.addWidget(save_defaultdeck)
+        def update_study_decks() -> None:
+            new_config = set_config_attributes(config)
+            config_util.set_config(mw, new_config)
+            webview_util.update_existing_study_decks_with_tooltip(new_config)
 
-        save_defaultfield = QCheckBox("Save fields")
-        save_defaultfield.setChecked(False)
-        save_options_horizontal_layout.addWidget(save_defaultfield)
+        update_study_decks_button.clicked.connect(lambda _: update_study_decks())
+        data_tab_vertical_layout.addWidget(update_study_decks_button)
+
+        save_selection = QCheckBox("Save selection")
+        save_selection.setChecked(getattr(config, "saveselection", True))
+        data_tab_vertical_layout.addWidget(save_selection)
 
         save_reset_buttons_horizontal_layout = QHBoxLayout()
         data_tab_vertical_layout.addLayout(save_reset_buttons_horizontal_layout)

@@ -131,7 +131,7 @@ def add_textfile_units(units: dict, config: types.SimpleNamespace, anki_priority
     for ch, count in counts.items():
         if anki_priority and ch in units:
             continue
-        units[ch] = util.unit_tuple(first_seen[ch], ch, -float(count), count, 0)
+        units[ch] = util.unit_tuple(first_seen[ch], ch, -float(count), count, 0, ())
 
     return units
 
@@ -186,6 +186,7 @@ def add_gsm_aggregate_units(units: dict, aggregate: dict, anki_priority: bool = 
             -(GSM_ENCOUNTER_MARKER + (score * EXTERNAL_SCORE_SCALE)),
             data["count"],
             0,
+            (),
         )
 
     return units
@@ -338,7 +339,7 @@ def add_jiten_backup_units(units: dict, config: types.SimpleNamespace, anki_prio
         if anki_priority and ch in units:
             continue
         avg_interval = data["total"] / data["count"]
-        units[ch] = util.unit_tuple(data["idx"], ch, -(JITEN_INTERVAL_MARKER + avg_interval), data["count"], 0)
+        units[ch] = util.unit_tuple(data["idx"], ch, -(JITEN_INTERVAL_MARKER + avg_interval), data["count"], 0, ())
 
     return units
 
@@ -413,6 +414,27 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
         tile += "</div>\n"
 
         return tile
+
+    def study_card_ids(study_units: list) -> list:
+        card_ids = []
+        for unit in study_units:
+            if unit.seen_cards_count == 0 and unit.unseen_cards_count > 0:
+                card_ids.extend(unit.unseen_card_ids)
+        return sorted(set(card_ids))
+
+    def studybuttons(group_index: int, card_ids: list) -> str:
+        if export or len(card_ids) == 0:
+            return ""
+        label = str(len(card_ids)) + " unseen card"
+        if len(card_ids) != 1:
+            label += "s"
+        return (
+            "<p class=\"study-actions\">"
+            + "<span class=\"study-count\">" + label + "</span>"
+            + "<a class=\"study-button\" href=\"" + util.get_create_study_deck_command(group_index) + "\">Create deck</a>"
+            + "<a class=\"study-button\" href=\"" + util.get_study_command(group_index) + "\">Study now</a>"
+            + "</p>\n"
+        )
 
     deckname = "*"
     if getattr(config, "usetextsource", False):
@@ -498,6 +520,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                         count_known += 1
                     table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
             table += "</div>\n"
+            block_study_card_ids = study_card_ids(sorted_units)
             total_count = len(grouping.groups[i].characters)
             if config.unseen:
                 unseen_kanji = []
@@ -512,6 +535,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                         table += element
                     table += "</div></details>\n"
             result_html += "<h4>" + str(count_found) + " of " + str(total_count) + " Found - " + "{:.2f}".format(round(count_found / (total_count if total_count > 0 else 1) * 100, 2)) + "%, " + str(count_known) + " of " + str(total_count) + " Known - " + "{:.2f}".format(round(count_known / (total_count if total_count > 0 else 1) * 100, 2)) + "%</h4>\n"
+            result_html += studybuttons(i, block_study_card_ids)
             result_html += table
 
         chars = reduce(lambda x, y: x+y, dict(grouping.groups).values())
@@ -519,7 +543,8 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
         table = "<div class=\"grid-container\">\n"
         total_count = 0
         count_known = 0
-        for unit in [u for u in units_list if u.value not in chars]:
+        leftover_units = [u for u in units_list if u.value not in chars]
+        for unit in leftover_units:
             if unit.seen_cards_count != 0 or config.unseen:
                 total_count += 1
                 bgcolor = util.get_background_color(unit.avg_interval, config.interval, unit.seen_cards_count, config.gradientcolors, config.kanjitileunseencolor)
@@ -528,6 +553,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                 table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
         table += "</div>\n"
         result_html += "<h4>" + str(count_known) + " of " + str(total_count) + " Known - " + "{:.2f}".format(round(count_known / (total_count if total_count > 0 else 1) * 100, 2)) + "%</h4>\n"
+        result_html += studybuttons(len(grouping.groups), study_card_ids(leftover_units))
         result_html += table
         result_html += "<style type=\"text/css\">.datasource{font-style:italic;font-size:0.75em;margin-top:1em;overflow-wrap:break-word;}.datasource a{color:#1034A6;}</style><span class=\"datasource\">Data source: " + ' '.join("<a href=\"{}\">{}</a>".format(w, urllib.parse.unquote(w)) if re.match("https?://", w) else w for w in grouping.source.split(' ')) + "</span>"
     else:
@@ -663,6 +689,24 @@ body {
 .key {
   display: inline-block;
   width: 3em
+}
+
+.study-actions {
+  margin: 0.2em 0 0.7em;
+}
+
+.study-count {
+  display: inline-block;
+  font-weight: 600;
+  margin: 0.15em 0.4em 0.15em 0;
+}
+
+.study-button {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  display: inline-block;
+  margin: 0.15em 0.25em;
+  padding: 0.25em 0.7em;
 }
 """).strip()
 
