@@ -126,7 +126,7 @@ That means Anki colors are never overwritten by external sources. Jiten/TXT can 
 
 ## Group Study Decks
 
-When a grouping is selected, each group block can expose study actions for kanji that are present in Anki but still unseen.
+each group block now shows study actions for kanji that are present in Anki but still unseen.
 
 - `Create deck` creates or updates a persistent filtered deck for that group, refreshes Anki's deck list, and keeps the Kanji Grid popup open.
 - `Study now` creates or updates the same persistent deck if it already exists, otherwise it follows the temporary-study behavior controlled by the add-on config.
