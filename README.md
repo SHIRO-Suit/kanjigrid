@@ -6,7 +6,6 @@ The goal of this fork is to allow including external sources of known data that 
 
 ![Screenshot1](./grid.png)
 ![Screenshot2](./new_legend.png)
-![Screenshot3](./popup.png)
 
 
 
@@ -134,6 +133,8 @@ When a grouping is selected, each group block can expose study actions for kanji
 - Persistent study decks are named `unseen kanjis from grid group "Group Name"`.
 - Temporary study decks are named `Temp - unseen kanjis from grid group "Group Name"` and are cleaned up when temporary study mode is enabled.
 
+[!NOTE] There is no guarantee the decks only contain cards that exatly match the group you selected, TMW Quiz, JLPT Levels etc.. It fetches ALL WORDS that contain the kanjis listed in these groups. 
+
 The `Decks` tab lists tracked Kanji Grid study decks and includes `Update All Decks`.
 
 `Update All Decks` handles both study-deck modes:
@@ -143,25 +144,22 @@ The `Decks` tab lists tracked Kanji Grid study decks and includes `Update All De
 
 The `Study batch size` setting controls the filtered deck's `Limit to` value when it is created. The default is `10`.
 
-Updating or rebuilding a filtered study deck empties it first, then loads a fresh batch up to the deck's current `Limit to` value. By default, existing filtered decks keep their current batch limit. Enable `Apply current batch size when updating decks` if updates should replace each deck's limit with the current global `Study batch size`. Cards that were already in learning are returned to their original deck with their learning state preserved by Anki's filtered-deck scheduling.
+When pressing `Update All Decks`: 
+ - Cards that are in "learning" are returned to their original deck with the learning state preserved (anki default behavior).
+ - if `Apply current batch size when updating decks` is toggled, changes the decks ­`limit to` value to the global one. this exists so that user set limits can be kept.
+ - the deck is rebuilt, with as many notes as the matching data and `limit to` allow.
+ 
 
 When a group study deck is created, Kanji Grid saves the relevant deck, field, grouping, language, search, and study-deck mode settings for that deck in `user_files/study_deck_configs.json`. Later updates use that saved snapshot, so changing the popup's current grouping or deck selection does not silently change older study decks. Orphaned entries are cleaned when study deck updates run.
 
-By default, study decks use a dynamic query-based filtered deck search instead of a fixed card-id list. The query starts with `is:new`, restricts to the selected deck when applicable, and searches the selected fields for the unseen and missing kanji from that group. This means newly mined cards matching the same group can be picked up by rebuilding the filtered deck without Kanji Grid recalculating every card manually. Dynamic decks can be rebuilt on mobile and on PCs without this add-on, but they can be heavier and slower when a group produces a very long kanji query. If Anki rejects a dynamic query because it is too large or invalid, the add-on falls back to a static card-id deck.
+`Use dynamic query deck`: generates a query that uses anki native filtering to find matching words. This means newly mined cards matching the same group can be picked up by rebuilding the filtered deck. Dynamic decks can be rebuilt on mobile and on PCs without this add-on, but are heavier and slower when a group produces a very long kanji query. If Anki rejects a dynamic query because it is too large or invalid, the add-on falls back to a static precalculated card-id deck.
+
+If disabled, the query would be is a pre calculated list of cards. Static card-id decks are faster but they need this add-on to recalculate the card list when your collection changes.
 
 There is also an experimental `Separate big dynamic queries in multiple decks` option. When enabled, oversized dynamic queries are split into several filtered decks named with `1/X`, `2/X`, and so on. `Update All Decks` tracks and rebuilds those split decks using their saved creation setup.
 
-Static card-id decks are usually faster at study time because the add-on calculates the card list up front. They are sometimes better for performance, but they need this add-on to recalculate the card list when your collection changes.
-
-If Anki rejects a dynamic query and the experimental split option is disabled or cannot split the query safely, the add-on falls back to the older fixed card-id search.
-
 The `Decks` tab also has optional settings to update or rebuild study decks when a note is added, and when Anki loads or reloads the collection. The startup/sync reload option is enabled by default, while the note-add option is disabled by default because rebuilding dynamic decks can take time.
 
-When fixed card-id study decks are used, the add-on can also update existing study decks automatically:
-
-- on Anki startup
-- when a new note is added, including lower-level add flows such as Yomitan
-- after sync reloads, because Anki can reload the collection after syncing
 
 The startup/sync behavior is controlled by `Update/rebuild study decks on startup and after sync reloads`.
 
@@ -191,3 +189,6 @@ This README only documents the fork-specific workflow. For everything else, use 
 - Original issue tracker: [upstream issues](https://github.com/Kuuuube/kanjigrid/issues)
 
 Please do not report bugs from this fork to the upstream project unless you have reproduced them in the unmodified upstream add-on.
+
+![Screenshot3](./popup.png)
+![Screenshot4](./popup2.png)
