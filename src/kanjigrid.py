@@ -142,9 +142,9 @@ class KanjiGrid:
 
             def search_jiten(_: object) -> dict:
                 try:
-                    return {"requestId": request_id, "results": generate_grid.jiten_media_search_suggestions(query)}
+                    return {"requestId": request_id, "query": query, "results": generate_grid.jiten_media_search_suggestions(query)}
                 except Exception as exception:  # noqa: BLE001
-                    return {"requestId": request_id, "error": str(exception)}
+                    return {"requestId": request_id, "query": query, "error": str(exception)}
 
             def on_search_done(payload: dict) -> None:
                 if payload.get("error"):

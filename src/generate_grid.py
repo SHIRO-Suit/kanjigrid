@@ -1095,8 +1095,9 @@ body {
 
 .jiten-work-results.child-view {
   display: grid;
-  gap: 0.35em;
-  grid-template-columns: repeat(auto-fit, minmax(18em, 1fr));
+  gap: 0.35em 0.45em;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--kg-jiten-result-width, 14em)), var(--kg-jiten-result-width, max-content)));
+  justify-content: start;
 }
 
 .jiten-work-results.loading {
@@ -1117,6 +1118,13 @@ body {
   padding: 0.35em 0.5em;
   text-align: left;
   width: 100%;
+}
+
+.jiten-work-results.child-view .jiten-work-result {
+  height: 100%;
+  margin: 0;
+  min-width: 0;
+  width: var(--kg-jiten-result-width, auto);
 }
 
 .jiten-work-result:hover {
@@ -1252,6 +1260,7 @@ let kgJitenLastSearchStatus = '';
 let kgJitenSearchTimer = null;
 let kgJitenSearchRequestId = 0;
 let kgJitenExposureTimer = null;
+const KG_JITEN_SEARCH_CACHE_PREFIX = 'kanjigrid.jiten.search.';
 
 function kgSetJitenStatus(text) {
   const status = document.getElementById('kg-jiten-status');
@@ -1265,6 +1274,71 @@ function kgSetJitenResultsLoading(isLoading) {
   container.setAttribute('aria-busy', isLoading ? 'true' : 'false');
 }
 
+function kgJitenSearchCacheKey(query) {
+  return KG_JITEN_SEARCH_CACHE_PREFIX + query.trim().toLowerCase();
+}
+
+function kgLoadCachedJitenSearch(query) {
+  try {
+    const raw = window.localStorage.getItem(kgJitenSearchCacheKey(query));
+    if (!raw) return false;
+    const payload = JSON.parse(raw);
+    if (!payload || !Array.isArray(payload.results)) return false;
+    kgJitenLastSearchResults = payload.results;
+    kgRenderJitenResults(payload.results, false);
+    kgJitenLastSearchStatus = 'Showing cached Jiten results while refreshing...';
+    kgSetJitenStatus(kgJitenLastSearchStatus);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function kgSaveCachedJitenSearch(query, results) {
+  try {
+    if (!query || !results || results.length === 0) return;
+    window.localStorage.setItem(kgJitenSearchCacheKey(query), JSON.stringify({
+      cachedAt: Date.now(),
+      results,
+    }));
+  } catch (error) {
+    /* localStorage can be disabled/full; search still works without it. */
+  }
+}
+
+function kgTextMatchesJitenQuery(result, query) {
+  const haystack = [
+    result.title || '',
+    result.subtitle || '',
+    result.mediaTypeLabel || '',
+  ].join(' ').toLowerCase();
+  return haystack.includes(query.trim().toLowerCase());
+}
+
+function kgCachedJitenMediaMatches(query) {
+  const seen = new Set();
+  const matches = [];
+  const normalized = query.trim().toLowerCase();
+  if (normalized.length < 2) return matches;
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || !key.startsWith(KG_JITEN_SEARCH_CACHE_PREFIX)) continue;
+      const payload = JSON.parse(window.localStorage.getItem(key) || '{}');
+      const results = Array.isArray(payload.results) ? payload.results : [];
+      results.forEach((result) => {
+        if (!result || !result.deckId || seen.has(result.deckId)) return;
+        if (!kgTextMatchesJitenQuery(result, normalized)) return;
+        seen.add(result.deckId);
+        matches.push(result);
+      });
+    }
+  } catch (error) {
+    return matches;
+  }
+  return matches.slice(0, 20);
+}
+
 function kgScheduleJitenSearch() {
   window.clearTimeout(kgJitenSearchTimer);
   const input = document.getElementById('kg-jiten-query');
@@ -1274,7 +1348,14 @@ function kgScheduleJitenSearch() {
     kgSetJitenStatus('Type at least 2 characters.');
     return;
   }
-  kgSetJitenStatus('Waiting for typing to pause...');
+  const localMatches = kgCachedJitenMediaMatches(query);
+  if (localMatches.length > 0) {
+    kgRenderJitenResults(localMatches, false);
+    kgSetJitenStatus('Showing cached media matches while refreshing Jiten...');
+  } else {
+    const usedCache = kgLoadCachedJitenSearch(query);
+    if (!usedCache) kgSetJitenStatus('Waiting for typing to pause...');
+  }
   kgJitenSearchTimer = window.setTimeout(() => kgSearchJitenWork(), 650);
 }
 
@@ -1296,11 +1377,28 @@ function kgJitenSearchResults(payload) {
   const requestId = payload && !Array.isArray(payload) ? payload.requestId || 0 : 0;
   if (requestId && requestId !== kgJitenSearchRequestId) return;
   const results = Array.isArray(payload) ? payload : payload.results || [];
+  const query = payload && !Array.isArray(payload) ? payload.query || '' : '';
   kgSetJitenResultsLoading(false);
   kgJitenLastSearchResults = results || [];
   kgRenderJitenResults(kgJitenLastSearchResults, false);
+  kgSaveCachedJitenSearch(query, results);
   kgJitenLastSearchStatus = results && results.length > 0 ? 'Choose a work to color matching missing kanji. First scan can be slow; cached works are reused.' : 'No Jiten matches found.';
   kgSetJitenStatus(kgJitenLastSearchStatus);
+}
+
+function kgResizeJitenChildGrid() {
+  const container = document.getElementById('kg-jiten-results');
+  if (!container || !container.classList.contains('child-view')) return;
+  const buttons = Array.from(container.querySelectorAll('.jiten-work-result'));
+  if (buttons.length === 0) return;
+  container.style.removeProperty('--kg-jiten-result-width');
+  let widest = 0;
+  buttons.forEach((button) => {
+    widest = Math.max(widest, button.scrollWidth);
+  });
+  const maxWidth = Math.max(180, container.clientWidth);
+  const target = Math.min(Math.ceil(widest) + 2, maxWidth);
+  container.style.setProperty('--kg-jiten-result-width', target + 'px');
 }
 
 function kgRenderJitenResults(results, showBack) {
@@ -1357,6 +1455,7 @@ function kgRenderJitenResults(results, showBack) {
     button.onclick = () => kgLoadJitenExposure(result.deckId, result.title);
     container.appendChild(button);
   });
+  if (showBack) window.setTimeout(kgResizeJitenChildGrid, 0);
 }
 
 function kgJitenSearchError(payload) {
@@ -1385,6 +1484,7 @@ function kgLoadJitenChildren(deckId) {
 
 function kgJitenChildResults(payload) {
   const children = payload.children || [];
+  kgSaveCachedJitenSearch('children:' + payload.parentDeckId, children);
   kgRenderJitenResults(children, true);
   const completeness = payload.complete ? '' : ' Showing partial sub-work list.';
   kgSetJitenStatus('Sub-works for "' + payload.parentTitle + '": ' + children.length + ' of ' + payload.totalItems + '.' + completeness);
@@ -1463,6 +1563,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  window.addEventListener('resize', () => kgResizeJitenChildGrid());
 });
 """.strip()
 
