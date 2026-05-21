@@ -34,6 +34,7 @@
     "usejitenapi": true,
     "jitenapikey": "",
     "usegsmapi": false,
+    "usegsmfutureexposure": false,
     "usegsmsource": false,
     "gsmsourcepath": "",
     "makestudydecktemporary": true,

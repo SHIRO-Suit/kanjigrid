@@ -1,5 +1,6 @@
 import datetime
 import csv
+import html
 import json
 import math
 import operator
@@ -20,10 +21,28 @@ from . import data, util
 
 JITEN_INTERVAL_MARKER = 1000000
 GSM_ENCOUNTER_MARKER = 2000000
+GSM_FUTURE_EXPOSURE_MARKER = 3000000
 EXTERNAL_SCORE_SCALE = 1000
 JMDICT_CACHE_VERSION = 2
+GSM_FUTURE_CACHE_VERSION = 1
+GSM_FUTURE_MAX_GAMES = 10
+GSM_FUTURE_MAX_VOCAB_PAGES_PER_DECK = 50
 GSM_API_BASE_URL = "http://localhost:7275"
 JITEN_API_BASE_URL = "https://api.jiten.moe/api"
+GSM_FUTURE_EXPOSURE_DETAILS = {}
+JITEN_SELECTED_WORK_GRADIENT = ["#fff4e0", "#d9791f"]
+JITEN_MEDIA_TYPE_LABELS = {
+    1: "Anime",
+    2: "Drama",
+    3: "Movie",
+    4: "Novel",
+    5: "Non-fiction",
+    6: "Video game",
+    7: "Visual novel",
+    8: "Web novel",
+    9: "Manga",
+    10: "Audio",
+}
 
 
 def valid_unit_key(config: types.SimpleNamespace, unit_key: str) -> bool:
@@ -100,6 +119,8 @@ def load_jiten_vocabulary_export(config: types.SimpleNamespace) -> dict:
 
 
 def external_unit_score(unit, config: types.SimpleNamespace) -> float:
+    if unit.avg_interval <= -GSM_FUTURE_EXPOSURE_MARKER:
+        return min((abs(unit.avg_interval) - GSM_FUTURE_EXPOSURE_MARKER) / EXTERNAL_SCORE_SCALE, 1)
     if unit.avg_interval <= -GSM_ENCOUNTER_MARKER:
         return min((abs(unit.avg_interval) - GSM_ENCOUNTER_MARKER) / EXTERNAL_SCORE_SCALE, 1)
     if unit.avg_interval <= -JITEN_INTERVAL_MARKER:
@@ -205,6 +226,299 @@ def gsm_api_available() -> bool:
         return bool(status.get("enabled", True))
     except (OSError, ValueError, urllib.error.URLError):
         return False
+
+
+def jiten_public_api_json(path: str, timeout: float = 8):
+    url = JITEN_API_BASE_URL + path
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "Accept-Encoding": "identity"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def jiten_media_result_from_deck(deck: dict) -> dict:
+    deck_id = int(deck.get("deckId", deck.get("DeckId")))
+    media_type = deck.get("mediaType", deck.get("MediaType", ""))
+    try:
+        media_type_label = JITEN_MEDIA_TYPE_LABELS.get(int(media_type), str(media_type))
+    except (TypeError, ValueError):
+        media_type_label = str(media_type or "")
+    subdeck_count = deck.get("childrenDeckCount", deck.get("ChildrenDeckCount", 0)) or 0
+    word_count = deck.get("wordCount", deck.get("WordCount", 0)) or 0
+    unique_kanji_count = deck.get("uniqueKanjiCount", deck.get("UniqueKanjiCount", 0)) or 0
+    title = deck.get("originalTitle") or deck.get("romajiTitle") or deck.get("englishTitle") or ("Jiten deck " + str(deck_id))
+    subtitle = deck.get("romajiTitle") or deck.get("englishTitle") or ""
+    return {
+        "deckId": deck_id,
+        "title": title,
+        "subtitle": subtitle if subtitle != title else "",
+        "mediaType": media_type,
+        "mediaTypeLabel": media_type_label,
+        "subdeckCount": int(subdeck_count),
+        "wordCount": int(word_count),
+        "uniqueKanjiCount": int(unique_kanji_count),
+    }
+
+
+def jiten_media_search_suggestions(query: str, limit: int = 8) -> list:
+    cleaned = query.strip()
+    if len(cleaned) < 2:
+        return []
+    encoded = urllib.parse.urlencode({"query": cleaned, "limit": max(1, min(limit, 10))})
+    payload = jiten_public_api_json(f"/media-deck/search-suggestions?{encoded}", timeout=8)
+    suggestions = payload.get("suggestions", payload.get("Suggestions", [])) or []
+    details_by_deck_id = {}
+    try:
+        details_payload = jiten_public_api_json(
+            "/media-deck/get-media-decks?" + urllib.parse.urlencode({"titleFilter": cleaned, "offset": 0}),
+            timeout=8,
+        )
+        for deck in details_payload.get("data", details_payload.get("Data", [])) or []:
+            details_by_deck_id[int(deck.get("deckId", deck.get("DeckId")))] = deck
+    except Exception:  # noqa: BLE001
+        details_by_deck_id = {}
+
+    results = []
+    for item in suggestions:
+        deck_id = item.get("deckId", item.get("DeckId"))
+        if not deck_id:
+            continue
+        deck_id = int(deck_id)
+        details = details_by_deck_id.get(deck_id, {})
+        merged = dict(item)
+        merged.update({key: value for key, value in details.items() if value not in (None, "")})
+        merged["deckId"] = deck_id
+        results.append(jiten_media_result_from_deck(merged))
+    return results
+
+
+def jiten_media_child_suggestions(deck_id: int) -> dict:
+    offset = 0
+    page_size = 25
+    total_items = 0
+    children = []
+    parent_title = "Jiten deck " + str(deck_id)
+
+    for _ in range(80):
+        payload = jiten_public_api_json(f"/media-deck/{deck_id}/detail?" + urllib.parse.urlencode({"offset": offset}), timeout=10)
+        total_items = int(payload.get("totalItems", payload.get("TotalItems", total_items or 0)) or 0)
+        page_size = int(payload.get("pageSize", payload.get("PageSize", page_size)) or page_size)
+        data_payload = payload.get("data", payload.get("Data", {})) or {}
+        main_deck = data_payload.get("mainDeck", data_payload.get("MainDeck", {})) or {}
+        if main_deck:
+            parent_title = main_deck.get("originalTitle") or main_deck.get("romajiTitle") or main_deck.get("englishTitle") or parent_title
+        subdecks = data_payload.get("subDecks", data_payload.get("SubDecks", [])) or []
+        for subdeck in subdecks:
+            children.append(jiten_media_result_from_deck(subdeck))
+
+        offset += page_size
+        if not subdecks or offset >= total_items:
+            break
+
+    return {
+        "parentDeckId": deck_id,
+        "parentTitle": parent_title,
+        "children": children,
+        "totalItems": total_items,
+        "complete": len(children) >= total_items,
+    }
+
+
+def gsm_future_cache_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "user_files", "gsm_future_exposure_cache.json")
+
+
+def load_gsm_future_cache() -> dict:
+    try:
+        with open(gsm_future_cache_path(), "r", encoding="utf-8") as cache_in:
+            cache = json.load(cache_in)
+        if cache.get("version") == GSM_FUTURE_CACHE_VERSION:
+            return cache
+    except Exception:  # noqa: BLE001
+        pass
+    return {"version": GSM_FUTURE_CACHE_VERSION, "decks": {}}
+
+
+def save_gsm_future_cache(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(gsm_future_cache_path()), exist_ok=True)
+        with open(gsm_future_cache_path(), "w", encoding="utf-8") as cache_out:
+            json.dump(cache, cache_out, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def gsm_unfinished_jiten_games() -> list:
+    payload = gsm_api_json("/api/games-management", timeout=5)
+    games = payload.get("games", [])
+    linked_unfinished = []
+    for game in games:
+        deck_id = game.get("deck_id")
+        if not deck_id or game.get("completed"):
+            continue
+        try:
+            deck_id = int(deck_id)
+        except (TypeError, ValueError):
+            continue
+        title = (
+            game.get("title_original")
+            or game.get("title_romaji")
+            or game.get("title_english")
+            or game.get("obs_scene_name")
+            or ("Jiten deck " + str(deck_id))
+        )
+        linked_unfinished.append({
+            "deck_id": deck_id,
+            "title": title,
+            "last_played": game.get("last_played") or 0,
+            "mined_character_count": game.get("mined_character_count") or 0,
+        })
+
+    linked_unfinished.sort(key=lambda game: (game["last_played"] or 0, game["mined_character_count"] or 0), reverse=True)
+    return linked_unfinished[:GSM_FUTURE_MAX_GAMES]
+
+
+def word_text_from_jiten_word(word: dict) -> str:
+    main = word.get("mainReading") or word.get("MainReading") or {}
+    return main.get("text") or main.get("Text") or ""
+
+
+def load_jiten_deck_kanji_counts(deck_id: int, config: types.SimpleNamespace, cache: dict) -> dict:
+    deck_key = str(deck_id)
+    cached = cache.get("decks", {}).get(deck_key)
+    if cached and isinstance(cached.get("kanji_counts"), dict):
+        cached["_cache_hit"] = True
+        return cached
+
+    kanji_counts = {}
+    total_items = None
+    page_size = 100
+    fetched_items = 0
+    complete = False
+    for page in range(GSM_FUTURE_MAX_VOCAB_PAGES_PER_DECK):
+        offset = page * page_size
+        query = urllib.parse.urlencode({"offset": offset, "sortBy": "deckFreq"})
+        payload = jiten_public_api_json(f"/media-deck/{deck_id}/vocabulary?{query}", timeout=12)
+        total_items = payload.get("totalItems", payload.get("TotalItems", total_items or 0))
+        page_size = payload.get("pageSize", payload.get("PageSize", page_size)) or page_size
+        data_payload = payload.get("data", payload.get("Data", {})) or {}
+        words = data_payload.get("words", data_payload.get("Words", [])) or []
+        if not words:
+            complete = fetched_items >= int(total_items or 0)
+            break
+
+        for word in words:
+            text = word_text_from_jiten_word(word)
+            if not text:
+                continue
+            try:
+                occurrences = int(float(word.get("occurrences", word.get("Occurrences", 1)) or 1))
+            except (TypeError, ValueError):
+                occurrences = 1
+            for ch in set(text):
+                if valid_unit_key(config, ch):
+                    kanji_counts[ch] = kanji_counts.get(ch, 0) + max(occurrences, 1)
+
+        fetched_items += len(words)
+        if fetched_items >= int(total_items or 0):
+            complete = True
+            break
+
+    cached_deck = {
+        "kanji_counts": kanji_counts,
+        "total_items": total_items or fetched_items,
+        "fetched_items": fetched_items,
+        "complete": complete,
+        "cached_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "_cache_hit": False,
+    }
+    cache.setdefault("decks", {})[deck_key] = cached_deck
+    return cached_deck
+
+
+def jiten_selected_work_exposure_payload(deck_id: int, title: str, config: types.SimpleNamespace) -> dict:
+    cache = load_gsm_future_cache()
+    cached_before = str(deck_id) in cache.get("decks", {})
+    deck_data = load_jiten_deck_kanji_counts(deck_id, config, cache)
+    if not cached_before:
+        save_gsm_future_cache(cache)
+    counts = {ch: int(count) for ch, count in deck_data.get("kanji_counts", {}).items() if int(count) > 0}
+    max_count = max(counts.values()) if counts else 1
+    colors = {
+        ch: util.get_gradient_color_hex(1 if max_count <= 1 else (math.log1p(count) / math.log1p(max_count)), JITEN_SELECTED_WORK_GRADIENT)
+        for ch, count in counts.items()
+    }
+    return {
+        "deckId": deck_id,
+        "title": title,
+        "counts": counts,
+        "colors": colors,
+        "complete": bool(deck_data.get("complete", False)),
+        "cacheHit": bool(deck_data.get("_cache_hit", False)),
+        "fetchedItems": int(deck_data.get("fetched_items", 0) or 0),
+        "totalItems": int(deck_data.get("total_items", 0) or 0),
+    }
+
+
+def add_gsm_future_exposure_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = True) -> dict:
+    global GSM_FUTURE_EXPOSURE_DETAILS
+    GSM_FUTURE_EXPOSURE_DETAILS = {}
+    if not getattr(config, "usegsmapi", False) or not getattr(config, "usegsmfutureexposure", False):
+        return units
+
+    try:
+        games = gsm_unfinished_jiten_games()
+    except (OSError, ValueError, urllib.error.URLError):
+        return units
+
+    if not games:
+        return units
+
+    cache = load_gsm_future_cache()
+    aggregate = {}
+    changed_cache = False
+    for game_idx, game in enumerate(games, start=1):
+        before = json.dumps(cache.get("decks", {}).get(str(game["deck_id"]), {}), sort_keys=True)
+        try:
+            deck_data = load_jiten_deck_kanji_counts(game["deck_id"], config, cache)
+        except (OSError, ValueError, urllib.error.URLError, TimeoutError):
+            continue
+        after = json.dumps(cache.get("decks", {}).get(str(game["deck_id"]), {}), sort_keys=True)
+        changed_cache = changed_cache or before != after
+        suffix = "" if deck_data.get("complete", False) else " (partial cache)"
+
+        for ch, count in deck_data.get("kanji_counts", {}).items():
+            if anki_priority and ch in units:
+                continue
+            entry = aggregate.setdefault(ch, {"idx": game_idx, "count": 0, "games": []})
+            entry["idx"] = min(entry["idx"], game_idx)
+            entry["count"] += int(count)
+            entry["games"].append({"title": game["title"] + suffix, "count": int(count)})
+
+    if changed_cache:
+        save_gsm_future_cache(cache)
+    if not aggregate:
+        return units
+
+    max_count = max(data["count"] for data in aggregate.values())
+    for ch, data in aggregate.items():
+        if anki_priority and ch in units:
+            continue
+        details = sorted(data["games"], key=lambda row: row["count"], reverse=True)
+        GSM_FUTURE_EXPOSURE_DETAILS[ch] = {"count": data["count"], "max_count": max_count, "games": details}
+
+    return units
+
+
+def gsm_future_exposure_bgcolor(char: str):
+    details = GSM_FUTURE_EXPOSURE_DETAILS.get(char)
+    if not details:
+        return None
+    count = max(int(details.get("count", 0)), 0)
+    max_count = max(int(details.get("max_count", 0)), 1)
+    if count <= 0:
+        return None
+    score = 1 if max_count <= 1 else (math.log1p(count) / math.log1p(max_count))
+    return util.get_gradient_color_hex(score, ["#edf7f5", "#289988"])
 
 
 def add_gsm_api_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
@@ -362,7 +676,7 @@ def get_grouping_overall_total(units_list: list, grouping: data.KanjiGrouping, c
         if unit.seen_cards_count != 0 or config.unseen:
             total_count += 1
             bgcolor = util.get_background_color(unit.avg_interval, config.interval, unit.seen_cards_count, config.gradientcolors, config.kanjitileunseencolor)
-            if unit.seen_cards_count != 0 or bgcolor not in [config.gradientcolors[0], config.kanjitileunseencolor]:
+            if unit_counts_as_known(unit, bgcolor, config):
                 overall_count_known += 1
                 if in_grouping:
                     grouping_count_known += 1
@@ -377,18 +691,37 @@ def get_grouping_overall_total(units_list: list, grouping: data.KanjiGrouping, c
     within_grouping_total = str(grouping_count_known) + " of " + str(grouping_unique_characters_count) + " Known in Grouping - " + percent_known_grouping + "</h4>\n"
     return overall_total + within_grouping_total
 
+
+def unit_counts_as_known(unit, bgcolor: str, config: types.SimpleNamespace) -> bool:
+    if unit.avg_interval <= -GSM_FUTURE_EXPOSURE_MARKER:
+        return False
+    return unit.seen_cards_count != 0 or bgcolor not in [config.gradientcolors[0], config.kanjitileunseencolor]
+
+
 def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> str:
     def unit_score(unit) -> float:
         return external_unit_score(unit, config)
 
-    def kanjitile(char: str, bgcolor: str, seen_cards_count: int = 0, unseen_cards_count: int = 0, avg_interval: int = 0) -> str:
+    def kanjitile(char: str, bgcolor: str, seen_cards_count: int = 0, unseen_cards_count: int = 0, avg_interval: int = 0, extra_class: str = "") -> str:
         tile = ""
 
         context_menu_events = f" onmouseenter=\"bridgeCommand('h:{char}');\" onmouseleave=\"bridgeCommand('l:{char}');\"" if not export else ""
+        escaped_char = html.escape(char, quote=True)
+        class_name = "grid-item" + ((" " + extra_class) if extra_class else "")
 
         if config.tooltips:
             tooltip = "Character: %s" % util.safe_unicodedata_name(char)
-            if avg_interval <= -GSM_ENCOUNTER_MARKER:
+            future_details = GSM_FUTURE_EXPOSURE_DETAILS.get(char)
+            if avg_interval <= -GSM_FUTURE_EXPOSURE_MARKER or future_details:
+                tooltip += " | GSM unfinished works exposure: " + str(future_details.get("count", seen_cards_count) if future_details else seen_cards_count)
+                details = future_details.get("games", []) if future_details else []
+                if details:
+                    top_details = details[:5]
+                    detail_text = "; ".join(str(row["title"]) + ": " + str(row["count"]) for row in top_details)
+                    if len(details) > len(top_details):
+                        detail_text += "; +" + str(len(details) - len(top_details)) + " more"
+                    tooltip += " | " + detail_text
+            elif avg_interval <= -GSM_ENCOUNTER_MARKER:
                 tooltip += " | GSM Encounters: " + str(seen_cards_count)
             elif avg_interval <= -JITEN_INTERVAL_MARKER:
                 interval = abs(avg_interval) - JITEN_INTERVAL_MARKER
@@ -398,9 +731,9 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             elif avg_interval:
                 tooltip += " | Avg Interval: " + str("{:.2f}".format(avg_interval)) + " | Score: " + str("{:.2f}".format(util.score_adjust(avg_interval / config.interval)))
             tooltip += " | Unseen: " + str(unseen_cards_count) + " | Seen: " + str(seen_cards_count)
-            tile += "\t<div class=\"grid-item\" style=\"background:%s;\" title=\"%s\"%s>" % (bgcolor, tooltip, context_menu_events)
+            tile += "\t<div class=\"%s\" data-char=\"%s\" style=\"background:%s;\" title=\"%s\"%s>" % (class_name, escaped_char, bgcolor, html.escape(tooltip, quote=True), context_menu_events)
         else:
-            tile += "\t<div class=\"grid-item\" style=\"background:%s;\"%s>" % (bgcolor, context_menu_events)
+            tile += "\t<div class=\"%s\" data-char=\"%s\" style=\"background:%s;\"%s>" % (class_name, escaped_char, bgcolor, context_menu_events)
 
         if config.onclickaction == "copy":
             tile += "<a style=\"cursor: pointer;\" class=\"kanji-tile\">" + char + "</a>"
@@ -454,6 +787,8 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
     if not export:
         result_html += "<style type=\"text/css\">" + SEARCH_CSS_SNIPPET + "</style>"
         result_html += "<script>" + SEARCH_JS_SNIPPET + "</script>"
+        if getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
+            result_html += "<script>" + JITEN_WORK_EXPOSURE_JS_SNIPPET + "</script>"
     result_html += "</head>\n"
     result_html += "<body>\n"
     result_html += "<div style=\"font-size: 3em;\">Kanji Grid - " + deckname + "</div>\n"
@@ -483,7 +818,21 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             gsm_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, ["#f0edf6", "#8a5fb5"])
         gsm_key_css_gradient += ")"
         result_html += "<p style=\"text-align: center;\">GSM encounters&nbsp;<span class=\"key\" style=\"background: " + gsm_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More encounters</p>\n"
+    if getattr(config, "usegsmapi", False) and getattr(config, "usegsmfutureexposure", False):
+        future_key_css_gradient = "linear-gradient(90deg"
+        for i in range(0, gradient_key_step_count + 1):
+            future_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, ["#edf7f5", "#289988"])
+        future_key_css_gradient += ")"
+        result_html += "<p style=\"text-align: center;\">GSM unfinished works&nbsp;<span class=\"key\" style=\"background: " + future_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More future exposure</p>\n"
+    if not export and getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
+        jiten_work_key_css_gradient = "linear-gradient(90deg"
+        for i in range(0, gradient_key_step_count + 1):
+            jiten_work_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, JITEN_SELECTED_WORK_GRADIENT)
+        jiten_work_key_css_gradient += ")"
+        result_html += "<p style=\"text-align: center;\">Selected Jiten work&nbsp;<span class=\"key\" style=\"background: " + jiten_work_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More occurrences</p>\n"
     result_html += "<hr style=\"border-style: dashed;border-color: #666;width: 100%;\">\n"
+    if not export and getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
+        result_html += JITEN_WORK_EXPOSURE_HTML_SNIPPET
     result_html += "<div style=\"text-align: center;\">\n"
 
     units_list = {
@@ -516,7 +865,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                 if unit.seen_cards_count != 0 or config.unseen:
                     count_found += 1
                     bgcolor = util.get_background_color(unit.avg_interval, config.interval, unit.seen_cards_count, config.gradientcolors, config.kanjitileunseencolor)
-                    if unit.seen_cards_count != 0 or bgcolor not in [config.gradientcolors[0], config.kanjitileunseencolor]:
+                    if unit_counts_as_known(unit, bgcolor, config):
                         count_known += 1
                     table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
             table += "</div>\n"
@@ -525,10 +874,12 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             if config.unseen:
                 unseen_kanji = []
                 count = 0
-                for char in [c for c in grouping.groups[i].characters if c not in kanji]:
+                missing_chars = [c for c in grouping.groups[i].characters if c not in kanji]
+                missing_chars.sort(key=lambda c: GSM_FUTURE_EXPOSURE_DETAILS.get(c, {}).get("count", 0), reverse=True)
+                for char in missing_chars:
                     count += 1
-                    bgcolor = config.kanjitilemissingcolor
-                    unseen_kanji.append(kanjitile(char, bgcolor))
+                    bgcolor = gsm_future_exposure_bgcolor(char) or config.kanjitilemissingcolor
+                    unseen_kanji.append(kanjitile(char, bgcolor, extra_class="missing-kanji"))
                 if count != 0:
                     table += "<details><summary>Missing kanji</summary><div class=\"grid-container\">\n"
                     for element in unseen_kanji:
@@ -548,7 +899,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             if unit.seen_cards_count != 0 or config.unseen:
                 total_count += 1
                 bgcolor = util.get_background_color(unit.avg_interval, config.interval, unit.seen_cards_count, config.gradientcolors, config.kanjitileunseencolor)
-                if unit.seen_cards_count != 0 or bgcolor not in [config.gradientcolors[0], config.kanjitileunseencolor]:
+                if unit_counts_as_known(unit, bgcolor, config):
                     count_known += 1
                 table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
         table += "</div>\n"
@@ -564,7 +915,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             if unit.seen_cards_count != 0 or config.unseen:
                 total_count += 1
                 bgcolor = util.get_background_color(unit.avg_interval, config.interval, unit.seen_cards_count, config.gradientcolors, config.kanjitileunseencolor)
-                if unit.seen_cards_count != 0 or bgcolor not in [config.gradientcolors[0], config.kanjitileunseencolor]:
+                if unit_counts_as_known(unit, bgcolor, config):
                     count_known += 1
                 table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
         table += "</div>\n"
@@ -619,6 +970,7 @@ def kanjigrid(mw, config: types.SimpleNamespace):
         units = textfile_grid(config)
         if getattr(config, "usegsmapi", False):
             add_gsm_api_units(units, config, anki_priority=True)
+            add_gsm_future_exposure_units(units, config, anki_priority=True)
         elif getattr(config, "usegsmsource", False):
             add_gsm_csv_units(units, config, anki_priority=True)
         return units
@@ -670,6 +1022,7 @@ def kanjigrid(mw, config: types.SimpleNamespace):
             add_textfile_units(units, config, anki_priority=True)
     if getattr(config, "usegsmapi", False):
         add_gsm_api_units(units, config, anki_priority=True)
+        add_gsm_future_exposure_units(units, config, anki_priority=True)
     elif getattr(config, "usegsmsource", False):
         add_gsm_csv_units(units, config, anki_priority=True)
     return units
@@ -708,6 +1061,110 @@ body {
   display: inline-block;
   margin: 0.15em 0.25em;
   padding: 0.25em 0.7em;
+}
+
+.jiten-work-panel {
+  border: 1px solid #cfcfcf;
+  border-radius: 6px;
+  display: block;
+  margin: 0.5em auto 1em;
+  max-width: 54em;
+  padding: 0.6em;
+  text-align: left;
+  width: calc(100% - 2em);
+}
+
+.jiten-work-panel * {
+  box-sizing: border-box;
+}
+
+.jiten-work-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+}
+
+.jiten-work-input {
+  flex: 1;
+  min-width: 12em;
+}
+
+.jiten-work-results {
+  margin-top: 0.45em;
+}
+
+.jiten-work-results.child-view {
+  display: grid;
+  gap: 0.35em;
+  grid-template-columns: repeat(auto-fit, minmax(18em, 1fr));
+}
+
+.jiten-work-results.loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.jiten-work-result {
+  align-items: stretch;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  gap: 0.4em;
+  margin: 0.25em 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.35em 0.5em;
+  text-align: left;
+  width: 100%;
+}
+
+.jiten-work-result:hover {
+  background: #f7f7f7;
+}
+
+.jiten-work-result-title {
+  display: block;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.jiten-work-result-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.jiten-work-result-meta {
+  color: #666;
+  display: block;
+  font-size: 0.85em;
+  margin-top: 0.15em;
+  overflow-wrap: anywhere;
+}
+
+.jiten-work-folder {
+  align-items: center;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 1.25em;
+  justify-content: center;
+  line-height: 1;
+  min-width: 2.4em;
+  padding: 0.2em 0.65em;
+}
+
+.jiten-work-back {
+  grid-column: 1 / -1;
+  margin-bottom: 0.35em;
+}
+
+.jiten-work-status {
+  color: #666;
+  font-size: 0.85em;
+  margin-top: 0.45em;
 }
 """).strip()
 
@@ -774,6 +1231,239 @@ function findChar(char) {
   /* ret value indicates whether a match was found */
   return true;
 }
+""".strip()
+
+JITEN_WORK_EXPOSURE_HTML_SNIPPET = """
+<div class="jiten-work-panel">
+  <div class="jiten-work-row">
+    <input id="kg-jiten-query" class="jiten-work-input" type="search" placeholder="Search Jiten work" />
+    <button type="button" onclick="kgSearchJitenWork()">Search</button>
+    <button type="button" onclick="kgClearJitenExposure()">Clear</button>
+  </div>
+  <div id="kg-jiten-results" class="jiten-work-results"></div>
+  <div id="kg-jiten-status" class="jiten-work-status">Search a Jiten work to preview its occurrences on missing kanji. First use for a work can be slow while its vocabulary is cached.</div>
+</div>
+""".strip()
+
+JITEN_WORK_EXPOSURE_JS_SNIPPET = """
+let kgJitenExposureOriginals = new Map();
+let kgJitenLastSearchResults = null;
+let kgJitenLastSearchStatus = '';
+let kgJitenSearchTimer = null;
+let kgJitenSearchRequestId = 0;
+let kgJitenExposureTimer = null;
+
+function kgSetJitenStatus(text) {
+  const status = document.getElementById('kg-jiten-status');
+  if (status) status.textContent = text || '';
+}
+
+function kgSetJitenResultsLoading(isLoading) {
+  const container = document.getElementById('kg-jiten-results');
+  if (!container) return;
+  container.classList.toggle('loading', !!isLoading);
+  container.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+}
+
+function kgScheduleJitenSearch() {
+  window.clearTimeout(kgJitenSearchTimer);
+  const input = document.getElementById('kg-jiten-query');
+  const query = input ? input.value.trim() : '';
+  if (query.length < 2) {
+    kgSetJitenResultsLoading(false);
+    kgSetJitenStatus('Type at least 2 characters.');
+    return;
+  }
+  kgSetJitenStatus('Waiting for typing to pause...');
+  kgJitenSearchTimer = window.setTimeout(() => kgSearchJitenWork(), 650);
+}
+
+function kgSearchJitenWork() {
+  const input = document.getElementById('kg-jiten-query');
+  const query = input ? input.value.trim() : '';
+  if (query.length < 2) {
+    kgSetJitenStatus('Type at least 2 characters.');
+    return;
+  }
+  kgJitenSearchRequestId += 1;
+  const requestId = kgJitenSearchRequestId;
+  kgSetJitenStatus('Searching Jiten...');
+  kgSetJitenResultsLoading(true);
+  bridgeCommand('jitensearch:' + encodeURIComponent(JSON.stringify({query, requestId})));
+}
+
+function kgJitenSearchResults(payload) {
+  const requestId = payload && !Array.isArray(payload) ? payload.requestId || 0 : 0;
+  if (requestId && requestId !== kgJitenSearchRequestId) return;
+  const results = Array.isArray(payload) ? payload : payload.results || [];
+  kgSetJitenResultsLoading(false);
+  kgJitenLastSearchResults = results || [];
+  kgRenderJitenResults(kgJitenLastSearchResults, false);
+  kgJitenLastSearchStatus = results && results.length > 0 ? 'Choose a work to color matching missing kanji. First scan can be slow; cached works are reused.' : 'No Jiten matches found.';
+  kgSetJitenStatus(kgJitenLastSearchStatus);
+}
+
+function kgRenderJitenResults(results, showBack) {
+  const container = document.getElementById('kg-jiten-results');
+  if (!container) return;
+  container.innerHTML = '';
+  container.classList.toggle('child-view', !!showBack);
+  if (!results || results.length === 0) {
+    return;
+  }
+  if (showBack) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'jiten-work-back';
+    back.textContent = '< Back';
+    back.onclick = () => {
+      kgRenderJitenResults(kgJitenLastSearchResults || [], false);
+      kgSetJitenStatus(kgJitenLastSearchStatus || 'Back to previous Jiten search.');
+    };
+    container.appendChild(back);
+  }
+  results.forEach((result) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'jiten-work-result';
+    const main = document.createElement('span');
+    main.className = 'jiten-work-result-main';
+    const title = document.createElement('span');
+    title.className = 'jiten-work-result-title';
+    const subtitle = result.subtitle ? ' - ' + result.subtitle : '';
+    title.textContent = result.title + subtitle;
+    const meta = document.createElement('span');
+    meta.className = 'jiten-work-result-meta';
+    const parts = [];
+    if (result.mediaTypeLabel) parts.push(result.mediaTypeLabel);
+    if (result.subdeckCount && result.subdeckCount > 0) parts.push(result.subdeckCount + ' sub-works');
+    if (result.wordCount && result.wordCount > 0) parts.push(result.wordCount.toLocaleString() + ' words');
+    if (result.uniqueKanjiCount && result.uniqueKanjiCount > 0) parts.push(result.uniqueKanjiCount.toLocaleString() + ' unique kanji');
+    meta.textContent = parts.join(' - ');
+    main.appendChild(title);
+    if (parts.length > 0) main.appendChild(meta);
+    button.appendChild(main);
+    if (result.subdeckCount && result.subdeckCount > 0) {
+      const folder = document.createElement('span');
+      folder.className = 'jiten-work-folder';
+      folder.textContent = '>';
+      folder.title = 'Show sub-works';
+      folder.onclick = (event) => {
+        event.stopPropagation();
+        kgLoadJitenChildren(result.deckId);
+      };
+      button.appendChild(folder);
+    }
+    button.onclick = () => kgLoadJitenExposure(result.deckId, result.title);
+    container.appendChild(button);
+  });
+}
+
+function kgJitenSearchError(payload) {
+  const requestId = payload && typeof payload === 'object' ? payload.requestId || 0 : 0;
+  if (requestId && requestId !== kgJitenSearchRequestId) return;
+  const message = payload && typeof payload === 'object' ? payload.error : payload;
+  kgSetJitenResultsLoading(false);
+  kgSetJitenStatus('Jiten search failed: ' + message);
+}
+
+function kgLoadJitenExposure(deckId, title) {
+  kgSetJitenStatus('Loading Jiten vocabulary exposure in the background...');
+  window.clearInterval(kgJitenExposureTimer);
+  const startedAt = Date.now();
+  kgJitenExposureTimer = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    kgSetJitenStatus('Loading Jiten vocabulary exposure in the background... ' + seconds + 's');
+  }, 1000);
+  bridgeCommand('jitenexposure:' + encodeURIComponent(JSON.stringify({deckId, title})));
+}
+
+function kgLoadJitenChildren(deckId) {
+  kgSetJitenStatus('Loading sub-works from Jiten...');
+  bridgeCommand('jitenchildren:' + encodeURIComponent(JSON.stringify({deckId})));
+}
+
+function kgJitenChildResults(payload) {
+  const children = payload.children || [];
+  kgRenderJitenResults(children, true);
+  const completeness = payload.complete ? '' : ' Showing partial sub-work list.';
+  kgSetJitenStatus('Sub-works for "' + payload.parentTitle + '": ' + children.length + ' of ' + payload.totalItems + '.' + completeness);
+}
+
+function kgJitenExposureStatus(message) {
+  kgSetJitenStatus(message);
+}
+
+function kgJitenExposureError(message) {
+  window.clearInterval(kgJitenExposureTimer);
+  kgSetJitenStatus('Jiten exposure failed: ' + message);
+}
+
+function kgClearJitenExposure() {
+  document.querySelectorAll('.missing-kanji').forEach((tile) => {
+    const original = kgJitenExposureOriginals.get(tile);
+    if (original) {
+      tile.style.background = original.background;
+      tile.title = original.title;
+    }
+  });
+  kgSortMissingKanjiByCounts({});
+  kgSetJitenStatus('Selected Jiten work exposure cleared.');
+}
+
+function kgSortMissingKanjiByCounts(counts) {
+  document.querySelectorAll('details .grid-container').forEach((container) => {
+    const tiles = Array.from(container.children).filter((tile) => tile.classList && tile.classList.contains('missing-kanji'));
+    if (tiles.length === 0) return;
+    tiles.forEach((tile, index) => {
+      if (!tile.dataset.kgOriginalOrder) tile.dataset.kgOriginalOrder = String(index);
+    });
+    tiles.sort((left, right) => {
+      const leftCount = counts[left.dataset.char] || 0;
+      const rightCount = counts[right.dataset.char] || 0;
+      if (leftCount !== rightCount) return rightCount - leftCount;
+      return Number(left.dataset.kgOriginalOrder || 0) - Number(right.dataset.kgOriginalOrder || 0);
+    });
+    tiles.forEach((tile) => container.appendChild(tile));
+  });
+}
+
+function kgApplyJitenExposure(payload) {
+  window.clearInterval(kgJitenExposureTimer);
+  kgClearJitenExposure();
+  const counts = payload.counts || {};
+  const colors = payload.colors || {};
+  let applied = 0;
+  document.querySelectorAll('.missing-kanji').forEach((tile) => {
+    const char = tile.dataset.char;
+    if (!char || !counts[char]) return;
+    if (!kgJitenExposureOriginals.has(tile)) {
+      kgJitenExposureOriginals.set(tile, {background: tile.style.background, title: tile.title || ''});
+    }
+    tile.style.background = colors[char] || '#d9791f';
+    const original = kgJitenExposureOriginals.get(tile);
+    const baseTitle = original.title || ('Character: ' + char);
+    tile.title = baseTitle + ' | Selected Jiten work: ' + payload.title + ' | Occurrences: ' + counts[char];
+    applied += 1;
+  });
+  kgSortMissingKanjiByCounts(counts);
+  const completeness = payload.complete ? '' : ' Partial cache.';
+  const cacheText = payload.cacheHit ? ' Used cache.' : ' Cached for next time.';
+  kgSetJitenStatus('Applied "' + payload.title + '" to ' + applied + ' missing kanji.' + completeness + cacheText);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('kg-jiten-query');
+  if (input) {
+    input.addEventListener('input', () => kgScheduleJitenSearch());
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        window.clearTimeout(kgJitenSearchTimer);
+        kgSearchJitenWork();
+      }
+    });
+  }
+});
 """.strip()
 
 COPY_JS_SNIPPET = """

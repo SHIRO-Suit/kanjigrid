@@ -113,6 +113,9 @@ def get_gradient_color_hex(score, gradient_colors) -> str:
 
 def get_background_color(avg_interval, config_interval, count, gradient_colors, kanjitileunseencolor) -> str:
     if avg_interval < 0:
+        if avg_interval <= -3000000:
+            score = min((abs(avg_interval) - 3000000) / 1000, 1)
+            return get_gradient_color_hex(score, ["#edf7f5", "#289988"])
         if avg_interval <= -2000000:
             score = min((abs(avg_interval) - 2000000) / 1000, 1)
             return get_gradient_color_hex(score, ["#f0edf6", "#8a5fb5"])

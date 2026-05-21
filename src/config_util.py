@@ -109,6 +109,9 @@ config_schema = {
     "usegsmapi": {
         "default": False,
     },
+    "usegsmfutureexposure": {
+        "default": False,
+    },
     "usegsmsource": {
         "default": False,
     },

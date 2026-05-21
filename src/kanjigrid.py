@@ -1,8 +1,11 @@
 import shlex
 import os
+import json
 import types
+import urllib.parse
 
 from anki import hooks
+from aqt.operations import QueryOp
 from aqt import gui_hooks, main, mw
 from aqt.qt import (
     QAction,
@@ -39,10 +42,12 @@ class KanjiGrid:
         if mw:
             self.menu = QMenu("Kanji Grid", mw)
             self.setupAction = QAction("Create / Configure Grid...", mw, triggered=self.setup)
+            self.loadLastGridAction = QAction("Load Last Grid", mw, triggered=self.load_last_grid)
             self.regenerateAction = QAction("Regenerate Last Grid", mw, triggered=self.regenerate_last_grid)
             self.updateDecksAction = QAction("Update Study Decks", mw, triggered=self.update_study_decks_from_menu)
             self.addonUpdateAction = QAction("Addon Update", mw, triggered=self.open_addon_update_page)
             self.menu.addAction(self.setupAction)
+            self.menu.addAction(self.loadLastGridAction)
             self.menu.addAction(self.regenerateAction)
             self.menu.addSeparator()
             self.menu.addAction(self.updateDecksAction)
@@ -65,7 +70,144 @@ class KanjiGrid:
             webview_util.schedule_existing_study_decks_startup_update()
             QTimer.singleShot(8000, webview_util.start_study_deck_note_watcher)
 
+    def last_grid_cache_path(self) -> str:
+        return os.path.join(os.path.dirname(__file__), "user_files", "last_grid_snapshot.json")
+
+    def serialize_grid_units(self, units: dict) -> list:
+        return [
+            [
+                unit.idx,
+                unit.value,
+                unit.avg_interval,
+                unit.seen_cards_count,
+                unit.unseen_cards_count,
+                list(unit.unseen_card_ids),
+            ]
+            for unit in units.values()
+        ]
+
+    def deserialize_grid_units(self, rows: list) -> dict:
+        units = {}
+        for row in rows:
+            unit = util.unit_tuple(row[0], row[1], row[2], row[3], row[4], tuple(row[5]))
+            units[unit.value] = unit
+        return units
+
+    def save_last_grid_snapshot(self, config: types.SimpleNamespace, deckname: str, units: dict, generated_html: str) -> None:
+        try:
+            cache_path = self.last_grid_cache_path()
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            payload = {
+                "version": 1,
+                "deckname": deckname,
+                "config": vars(config),
+                "units": self.serialize_grid_units(units),
+                "html": generated_html,
+            }
+            with open(cache_path, "w", encoding="utf-8") as cache_out:
+                json.dump(payload, cache_out, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def load_last_grid_snapshot(self):
+        with open(self.last_grid_cache_path(), "r", encoding="utf-8") as cache_in:
+            payload = json.load(cache_in)
+        if payload.get("version") != 1 or not payload.get("html"):
+            raise ValueError("Last grid cache is missing or incompatible.")
+        config = types.SimpleNamespace(**payload.get("config", {}))
+        deckname = payload.get("deckname", "Last Grid")
+        units = self.deserialize_grid_units(payload.get("units", []))
+        return config, deckname, units, payload["html"]
+
+    def has_last_grid_snapshot(self) -> bool:
+        try:
+            if not os.path.isfile(self.last_grid_cache_path()):
+                return False
+            with open(self.last_grid_cache_path(), "r", encoding="utf-8") as cache_in:
+                payload = json.load(cache_in)
+            return payload.get("version") == 1 and bool(payload.get("html"))
+        except Exception:  # noqa: BLE001
+            return False
+
     def link_handler(self, link: str, config: types.SimpleNamespace, deckname: str) -> None:
+        if link.startswith("jitensearch:"):
+            payload_text = urllib.parse.unquote(link[12:])
+            request_id = 0
+            try:
+                request = json.loads(payload_text) if payload_text.startswith("{") else {"query": payload_text}
+                query = str(request.get("query", ""))
+                request_id = int(request.get("requestId", 0) or 0)
+            except Exception:  # noqa: BLE001
+                query = payload_text
+
+            def search_jiten(_: object) -> dict:
+                try:
+                    return {"requestId": request_id, "results": generate_grid.jiten_media_search_suggestions(query)}
+                except Exception as exception:  # noqa: BLE001
+                    return {"requestId": request_id, "error": str(exception)}
+
+            def on_search_done(payload: dict) -> None:
+                if payload.get("error"):
+                    self.wv.eval("kgJitenSearchError(" + json.dumps(payload, ensure_ascii=False) + ");")
+                else:
+                    self.wv.eval("kgJitenSearchResults(" + json.dumps(payload, ensure_ascii=False) + ");")
+
+            QueryOp(parent=self.win, op=search_jiten, success=on_search_done).run_in_background()
+            return
+
+        if link.startswith("jitenexposure:"):
+            payload_text = urllib.parse.unquote(link[14:])
+            try:
+                request = json.loads(payload_text)
+                deck_id = int(request.get("deckId"))
+                title = str(request.get("title") or ("Jiten deck " + str(deck_id)))
+            except Exception as exception:  # noqa: BLE001
+                self.wv.eval("kgJitenExposureError(" + json.dumps(str(exception), ensure_ascii=False) + ");")
+                return
+
+            self.wv.eval("kgJitenExposureStatus('Loading Jiten vocabulary exposure in the background...');")
+
+            def load_exposure(_: object) -> dict:
+                try:
+                    return generate_grid.jiten_selected_work_exposure_payload(deck_id, title, config)
+                except Exception as exception:  # noqa: BLE001
+                    return {"error": str(exception)}
+
+            def on_exposure_done(payload: dict) -> None:
+                if payload.get("error"):
+                    self.wv.eval("kgJitenExposureError(" + json.dumps(payload.get("error"), ensure_ascii=False) + ");")
+                else:
+                    self.wv.eval("kgApplyJitenExposure(" + json.dumps(payload, ensure_ascii=False) + ");")
+
+            QueryOp(parent=self.win, op=load_exposure, success=on_exposure_done).run_in_background()
+            return
+
+        if link.startswith("jitenchildren:"):
+            payload_text = urllib.parse.unquote(link[14:])
+            try:
+                request = json.loads(payload_text)
+                deck_id = int(request.get("deckId"))
+            except Exception as exception:  # noqa: BLE001
+                self.wv.eval("kgJitenExposureError(" + json.dumps(str(exception), ensure_ascii=False) + ");")
+                return
+
+            self.wv.eval("kgJitenExposureStatus('Loading sub-works from Jiten...');")
+
+            def load_children(_: object) -> dict:
+                try:
+                    return generate_grid.jiten_media_child_suggestions(deck_id)
+                except Exception as exception:  # noqa: BLE001
+                    return {"error": str(exception)}
+
+            def on_children_done(payload: dict) -> None:
+                if payload.get("error"):
+                    self.wv.eval("kgJitenExposureError(" + json.dumps(payload.get("error"), ensure_ascii=False) + ");")
+                else:
+                    self.wv.eval("kgJitenChildResults(" + json.dumps(payload, ensure_ascii=False) + ");")
+
+            QueryOp(parent=self.win, op=load_children, success=on_children_done).run_in_background()
+            return
+
         if link.startswith("createstudy:"):
             group_index_text = link[12:]
             webview_util.on_create_study_deck_cmd(group_index_text, config, self.study_units)
@@ -89,8 +231,11 @@ class KanjiGrid:
         else:
             webview_util.on_browse_cmd(link, config, deckname)
 
-    def displaygrid(self, config: types.SimpleNamespace, deckname: str, units: dict) -> None:
-        generated_html = generate_grid.generate(mw, config, units)
+    def displaygrid(self, config: types.SimpleNamespace, deckname: str, units: dict, generated_html=None, cache_snapshot: bool = True) -> None:
+        if generated_html is None:
+            generated_html = generate_grid.generate(mw, config, units)
+        if cache_snapshot:
+            self.save_last_grid_snapshot(config, deckname, units, generated_html)
         self.win = QDialog(mw, Qt.WindowType.Window)
         current_win = self.win
         self.wv = webview_util.init_webview()
@@ -159,7 +304,26 @@ class KanjiGrid:
         return True
 
     def update_menu_actions(self) -> None:
+        self.loadLastGridAction.setEnabled(self.has_last_grid_snapshot())
         self.regenerateAction.setEnabled(self.has_saved_grid_config())
+
+    def load_last_grid(self) -> None:
+        if not self.has_last_grid_snapshot():
+            QMessageBox.information(
+                mw,
+                "Kanji Grid",
+                "No cached grid found yet. Generate a grid first.",
+            )
+            return
+        previous_win = getattr(self, "win", None)
+        try:
+            data.init_groups()
+            config, deckname, units, generated_html = self.load_last_grid_snapshot()
+            self.displaygrid(config, deckname, units, generated_html=generated_html, cache_snapshot=False)
+        except Exception as exception:  # noqa: BLE001
+            QMessageBox.critical(mw, "Kanji Grid", "Failed to load last grid:\n" + str(exception))
+        if getattr(self, "win", None) is not None and self.win is not previous_win:
+            self.win.show()
 
     def regenerate_last_grid(self) -> None:
         if not self.has_saved_grid_config():
@@ -403,6 +567,14 @@ class KanjiGrid:
         gsm_api_checkbox.setChecked(False)
         gsm_source_layout.addWidget(gsm_api_checkbox)
 
+        gsm_future_exposure_checkbox = QCheckBox("Include unfinished GSM work exposure")
+        gsm_future_exposure_checkbox.setChecked(getattr(config, "usegsmfutureexposure", False))
+        gsm_source_layout.addWidget(gsm_future_exposure_checkbox)
+        gsm_future_exposure_note = QLabel("Colors kanji that are still missing from the grid but appear in unfinished GSM games linked to Jiten. They stay in Missing kanji. First use for each linked media can be slow while its vocabulary is cached.")
+        gsm_future_exposure_note.setWordWrap(True)
+        gsm_future_exposure_note.setStyleSheet("color: gray")
+        gsm_source_layout.addWidget(gsm_future_exposure_note)
+
         gsm_source_horizontal_layout = QHBoxLayout()
         gsm_source_path = QLineEdit()
         gsm_source_path.setPlaceholderText("GSM CSV export")
@@ -441,6 +613,8 @@ class KanjiGrid:
             gsm_api_status.setVisible(gsm_enabled)
             gsm_api_checkbox.setVisible(gsm_enabled)
             gsm_api_checkbox.setEnabled(gsm_api_detected)
+            gsm_future_exposure_checkbox.setVisible(gsm_enabled and gsm_api_checkbox.isChecked())
+            gsm_future_exposure_note.setVisible(gsm_enabled and gsm_api_checkbox.isChecked() and gsm_future_exposure_checkbox.isChecked())
             gsm_source_path.setVisible(gsm_enabled and not gsm_api_checkbox.isChecked())
             gsm_source_browse.setVisible(gsm_enabled and not gsm_api_checkbox.isChecked())
 
@@ -452,6 +626,7 @@ class KanjiGrid:
         text_source_kind.currentTextChanged.connect(lambda _: update_external_source_controls())
         gsm_source_checkbox.toggled.connect(lambda _: update_external_source_controls())
         gsm_api_checkbox.toggled.connect(lambda _: update_external_source_controls())
+        gsm_future_exposure_checkbox.toggled.connect(lambda _: update_external_source_controls())
         update_external_source_controls()
 
         def check_gsm_api_after_open() -> None:
@@ -556,6 +731,7 @@ class KanjiGrid:
             config.usejitenapi = jiten_selected and jiten_api_checkbox.isChecked()
             config.jitenapikey = jiten_api_token.text()
             config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
+            config.usegsmfutureexposure = config.usegsmapi and gsm_future_exposure_checkbox.isChecked()
             config.usegsmsource = gsm_selected
             config.gsmsourcepath = gsm_source_path.text()
             config.saveselection = save_selection.isChecked()
@@ -595,6 +771,7 @@ class KanjiGrid:
             saved_config.usejitenapi = jiten_selected and jiten_api_checkbox.isChecked()
             saved_config.jitenapikey = jiten_api_token.text()
             saved_config.usegsmapi = gsm_selected and gsm_api_checkbox.isChecked()
+            saved_config.usegsmfutureexposure = saved_config.usegsmapi and gsm_future_exposure_checkbox.isChecked()
             saved_config.usegsmsource = gsm_selected
             saved_config.gsmsourcepath = gsm_source_path.text()
             saved_config.usequerystudydeck = use_query_study_deck.isChecked()

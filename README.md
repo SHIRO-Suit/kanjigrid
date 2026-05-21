@@ -43,7 +43,7 @@ Anki always has priority. If a kanji is already present in the selected Anki car
 
 The `Data` tab has a `Save selection` checkbox, enabled by default. When enabled, the add-on remembers the selected deck, fields, grouping, and language so study decks can be updated later without reopening the setup window.
 
-The `Tools` > `Kanji Grid` menu also has shortcuts to regenerate the last saved grid without opening the setup window, update tracked study decks directly, and open the latest GitHub release page.
+The `Tools` > `Kanji Grid` menu also has shortcuts to load the last cached grid without recalculating it, regenerate the last saved grid without opening the setup window, update tracked study decks directly, and open the latest GitHub release page.
 
 ## External Sources
 
@@ -78,6 +78,8 @@ Jiten backups store word IDs instead of the written words. When using a backup J
 
 The setup window also has a `Use Jiten API` option and a password-style `Jiten API key or Bearer token` field. When enabled, the add-on downloads enriched card data from Jiten during grid generation instead of asking for a backup JSON file or JMdict ZIP. The credential is saved in the add-on configuration so it persists between sessions.
 
+When a Jiten API token is saved, generated grids include a Jiten work search panel. Search for a work, select a result, and the grid will color matching kanji that are already in the `Missing kanji` section with a separate orange gradient. This does not move them out of `Missing kanji`; it only shows which missing kanji appear in the selected work. Results show the media type and, when Jiten provides it, the number of sub-works and rough deck size so long series are easier to spot. Results with sub-works also have a `>` button to browse and select a more precise child deck, with a back button to return to the previous search. Search, sub-work loading, and work exposure scans run in the background. First use for a work can still take time while its vocabulary is cached locally; later previews reuse that cache.
+
 The add-on creates a local cache for the JMdict ID mapping in:
 
 ```text
@@ -100,13 +102,15 @@ When detected, enable:
 
 The add-on reads GSM's own kanji grid endpoint and uses its encounter frequencies directly.
 
+When `Use GSM API` is enabled, `Include unfinished GSM work exposure` can also color missing kanji that appear in unfinished GSM games linked to Jiten. These kanji stay in the `Missing kanji` section. This uses a separate teal gradient, aggregates occurrences across the selected unfinished works, and shows per-game details in the tile tooltip. First use for each linked media can be slow while its vocabulary is cached; later generations reuse the local cache. To avoid heavy API use, Jiten vocabulary scans are limited to the most active unfinished linked games.
+
 If GSM is not running, or if you prefer a file-based workflow, use the CSV fallback:
 
 - `Use GSM encounters CSV fallback`
 
 Then select the GSM `.csv` file.
 
-GSM-derived kanji use a separate purple/gray encounter gradient. This is intentionally different from the Anki/Jiten colors because GSM represents exposure frequency, not memory strength or review interval.
+GSM-derived kanji use separate encounter and future-exposure gradients. These are intentionally different from the Anki/Jiten colors because GSM represents exposure frequency, not memory strength or review interval.
 
 ## Using Multiple Sources Together
 
