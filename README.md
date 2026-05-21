@@ -122,7 +122,9 @@ That means Anki colors are never overwritten by external sources. Jiten/TXT can 
 
 ### Jiten work exposure
 
-When a Jiten API token is saved, generated grids include a Jiten work search panel. Search for a work, select a result, and the grid will color matching kanji that are already in the `Missing kanji` section with a separate orange gradient for number of occurences. You can also select specific sub-works. Search has the same behavior as jiten website, but are cached to load faster if you search them again. Each loaded Media data (by clicking) is also cached.
+When a Jiten API token is saved, generated grids include a Jiten work search panel. Search for a work, select a result, and the grid will color matching kanji that are already in the `Missing kanji` section with a separate orange gradient for number of occurrences. You can also select specific sub-works. Search has the same behavior as Jiten website, but results are cached to load faster if you search them again. Each loaded media is also cached.
+
+The `Additive` toggle lets you keep several selected works at once. For each missing kanji, the selected work with the highest occurrence count is shown, and the tooltip shows that work plus its occurrence count. This can help if you want to plan a sequence of works that covers more missing kanji. Use `Clear` to reset the selection.
 
 ![ScreenshotGif](./jitenSearch.gif)
 

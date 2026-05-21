@@ -1253,7 +1253,7 @@ JITEN_WORK_EXPOSURE_HTML_SNIPPET = """
   <div class="jiten-work-row">
     <input id="kg-jiten-query" class="jiten-work-input" type="search" placeholder="Search Jiten work" />
     <button type="button" onclick="kgSearchJitenWork()">Search</button>
-    <label class="jiten-work-toggle" title="Keep previous selected works and let the work with the most occurrences win for each kanji.">
+    <label class="jiten-work-toggle" title="Keep multiple selected works. For each kanji, show the selected work with the most occurrences.">
       <input id="kg-jiten-additive" type="checkbox" />
       Additive
     </label>
@@ -1611,7 +1611,7 @@ function kgApplyJitenExposure(payload) {
   }
   const completeness = payload.complete ? '' : ' Partial cache.';
   const cacheText = payload.cacheHit ? ' Used cache.' : ' Cached for next time.';
-  const additiveText = additive ? ' Additive roadmap: ' + kgJitenAdditiveSources.size + ' works.' : '';
+  const additiveText = additive ? ' Additive selection: ' + kgJitenAdditiveSources.size + ' works.' : '';
   kgSetJitenStatus('Applied "' + payload.title + '" to ' + applied + ' missing kanji.' + completeness + cacheText + additiveText);
 }
 
