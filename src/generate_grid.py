@@ -1164,6 +1164,13 @@ body {
   padding: 0.2em 0.65em;
 }
 
+.jiten-work-toggle {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.25em;
+  white-space: nowrap;
+}
+
 .jiten-work-back {
   grid-column: 1 / -1;
   margin-bottom: 0.35em;
@@ -1246,6 +1253,10 @@ JITEN_WORK_EXPOSURE_HTML_SNIPPET = """
   <div class="jiten-work-row">
     <input id="kg-jiten-query" class="jiten-work-input" type="search" placeholder="Search Jiten work" />
     <button type="button" onclick="kgSearchJitenWork()">Search</button>
+    <label class="jiten-work-toggle" title="Keep previous selected works and let the work with the most occurrences win for each kanji.">
+      <input id="kg-jiten-additive" type="checkbox" />
+      Additive
+    </label>
     <button type="button" onclick="kgClearJitenExposure()">Clear</button>
   </div>
   <div id="kg-jiten-results" class="jiten-work-results"></div>
@@ -1260,6 +1271,7 @@ let kgJitenLastSearchStatus = '';
 let kgJitenSearchTimer = null;
 let kgJitenSearchRequestId = 0;
 let kgJitenExposureTimer = null;
+let kgJitenAdditiveSources = new Map();
 const KG_JITEN_SEARCH_CACHE_PREFIX = 'kanjigrid.jiten.search.';
 
 function kgSetJitenStatus(text) {
@@ -1500,6 +1512,7 @@ function kgJitenExposureError(message) {
 }
 
 function kgClearJitenExposure() {
+  kgJitenAdditiveSources = new Map();
   document.querySelectorAll('.missing-kanji').forEach((tile) => {
     const original = kgJitenExposureOriginals.get(tile);
     if (original) {
@@ -1509,6 +1522,60 @@ function kgClearJitenExposure() {
   });
   kgSortMissingKanjiByCounts({});
   kgSetJitenStatus('Selected Jiten work exposure cleared.');
+}
+
+function kgApplyJitenSourceToTiles(counts, colors, title) {
+  let applied = 0;
+  document.querySelectorAll('.missing-kanji').forEach((tile) => {
+    const char = tile.dataset.char;
+    if (!char || !counts[char]) return;
+    if (!kgJitenExposureOriginals.has(tile)) {
+      kgJitenExposureOriginals.set(tile, {background: tile.style.background, title: tile.title || ''});
+    }
+    tile.style.background = colors[char] || '#d9791f';
+    const original = kgJitenExposureOriginals.get(tile);
+    const baseTitle = original.title || ('Character: ' + char);
+    tile.title = baseTitle + ' | Best Jiten work: ' + title + ' | Occurrences: ' + counts[char];
+    applied += 1;
+  });
+  return applied;
+}
+
+function kgRecomputeAdditiveJitenExposure() {
+  const bestCounts = {};
+  const bestColors = {};
+  const bestTitles = {};
+  kgJitenAdditiveSources.forEach((source) => {
+    Object.entries(source.counts || {}).forEach(([char, count]) => {
+      if (!bestCounts[char] || count > bestCounts[char]) {
+        bestCounts[char] = count;
+        bestColors[char] = source.colors[char];
+        bestTitles[char] = source.title;
+      }
+    });
+  });
+  let applied = 0;
+  document.querySelectorAll('.missing-kanji').forEach((tile) => {
+    const original = kgJitenExposureOriginals.get(tile);
+    if (original) {
+      tile.style.background = original.background;
+      tile.title = original.title;
+    }
+  });
+  document.querySelectorAll('.missing-kanji').forEach((tile) => {
+    const char = tile.dataset.char;
+    if (!char || !bestCounts[char]) return;
+    if (!kgJitenExposureOriginals.has(tile)) {
+      kgJitenExposureOriginals.set(tile, {background: tile.style.background, title: tile.title || ''});
+    }
+    const original = kgJitenExposureOriginals.get(tile);
+    const baseTitle = original.title || ('Character: ' + char);
+    tile.style.background = bestColors[char] || '#d9791f';
+    tile.title = baseTitle + ' | Best Jiten work: ' + bestTitles[char] + ' | Occurrences: ' + bestCounts[char];
+    applied += 1;
+  });
+  kgSortMissingKanjiByCounts(bestCounts);
+  return applied;
 }
 
 function kgSortMissingKanjiByCounts(counts) {
@@ -1530,26 +1597,22 @@ function kgSortMissingKanjiByCounts(counts) {
 
 function kgApplyJitenExposure(payload) {
   window.clearInterval(kgJitenExposureTimer);
-  kgClearJitenExposure();
   const counts = payload.counts || {};
   const colors = payload.colors || {};
+  const additive = !!document.getElementById('kg-jiten-additive')?.checked;
   let applied = 0;
-  document.querySelectorAll('.missing-kanji').forEach((tile) => {
-    const char = tile.dataset.char;
-    if (!char || !counts[char]) return;
-    if (!kgJitenExposureOriginals.has(tile)) {
-      kgJitenExposureOriginals.set(tile, {background: tile.style.background, title: tile.title || ''});
-    }
-    tile.style.background = colors[char] || '#d9791f';
-    const original = kgJitenExposureOriginals.get(tile);
-    const baseTitle = original.title || ('Character: ' + char);
-    tile.title = baseTitle + ' | Selected Jiten work: ' + payload.title + ' | Occurrences: ' + counts[char];
-    applied += 1;
-  });
-  kgSortMissingKanjiByCounts(counts);
+  if (additive) {
+    kgJitenAdditiveSources.set(String(payload.deckId), {title: payload.title, counts, colors});
+    applied = kgRecomputeAdditiveJitenExposure();
+  } else {
+    kgClearJitenExposure();
+    applied = kgApplyJitenSourceToTiles(counts, colors, payload.title);
+    kgSortMissingKanjiByCounts(counts);
+  }
   const completeness = payload.complete ? '' : ' Partial cache.';
   const cacheText = payload.cacheHit ? ' Used cache.' : ' Cached for next time.';
-  kgSetJitenStatus('Applied "' + payload.title + '" to ' + applied + ' missing kanji.' + completeness + cacheText);
+  const additiveText = additive ? ' Additive roadmap: ' + kgJitenAdditiveSources.size + ' works.' : '';
+  kgSetJitenStatus('Applied "' + payload.title + '" to ' + applied + ' missing kanji.' + completeness + cacheText + additiveText);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
