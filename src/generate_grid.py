@@ -573,6 +573,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
         if count_known == 0:
             known_percent = "0%"
         result_html += "<h4>" + str(count_known) + " of " + str(total_count) + " Known - " + known_percent + "</h4>\n"
+        result_html += studybuttons(0, study_card_ids(units_list))
         result_html += table
     result_html += "</div></body></html>\n"
     return result_html
