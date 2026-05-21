@@ -78,25 +78,9 @@ Jiten backups store word IDs instead of the written words. When using a backup J
 
 The setup window also has a `Use Jiten API` option and a password-style `Jiten API key or Bearer token` field. When enabled, the add-on downloads enriched card data from Jiten during grid generation instead of asking for a backup JSON file or JMdict ZIP. The credential is saved in the add-on configuration so it persists between sessions.
 
-## Decks and exposure
-
-### Jiten work exposure
-
-When a Jiten API token is saved, generated grids include a Jiten work search panel. Search for a work, select a result, and the grid will color matching kanji that are already in the `Missing kanji` section with a separate orange gradient for number of occurences. You can also select specific sub-works. Search has the same behavior as jiten website, but are cached to load faster if you search them again.
-
-### GSM unfinished work exposure
-
-When `Use GSM API` is enabled, `Include unfinished GSM work exposure` can also color missing kanji that appear in unfinished GSM games linked to Jiten. This uses a separate teal gradient, aggregates occurrences across the selected unfinished works, and shows per-game details in the tile tooltip. First use for each linked media can be slow while its vocabulary is cached; later generations reuse the local cache. To avoid heavy API use, Jiten vocabulary scans are limited to the most active unfinished linked games.
-
-The add-on creates a local cache for the JMdict ID mapping in:
-
-```text
-user_files/jmdict_sequence_cache.json
-```
-
 ### GSM API / Encounters CSV
 
-Use this for GameSentenceMiner encounter data.
+Use this for GameSentenceMiner encountered kanji data.
 
 If GSM is running locally, the add-on detects its API at:
 
@@ -133,6 +117,16 @@ Priority order:
 3. GSM encounters
 
 That means Anki colors are never overwritten by external sources. Jiten/TXT can fill missing kanji after Anki. GSM can then fill anything still missing.
+
+## Work coverage for missing kanji
+
+### Jiten work exposure
+
+When a Jiten API token is saved, generated grids include a Jiten work search panel. Search for a work, select a result, and the grid will color matching kanji that are already in the `Missing kanji` section with a separate orange gradient for number of occurences. You can also select specific sub-works. Search has the same behavior as jiten website, but are cached to load faster if you search them again.
+
+### GSM unfinished work exposure
+
+When `Use GSM API` is enabled, `Include unfinished GSM work exposure` can also color missing kanji that appear in unfinished GSM games linked to Jiten. This uses a separate teal gradient, aggregates occurrences across the selected unfinished works, and shows per-game details in the tile tooltip. First use for each linked media can be slow while its vocabulary is cached; later generations reuse the local cache. To avoid heavy API use, Jiten vocabulary scans are limited to the most active unfinished linked games.
 
 ## Group Study Decks
 
