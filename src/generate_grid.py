@@ -824,15 +824,19 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
             future_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, ["#edf7f5", "#289988"])
         future_key_css_gradient += ")"
         result_html += "<p style=\"text-align: center;\">GSM unfinished works&nbsp;<span class=\"key\" style=\"background: " + future_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More future exposure</p>\n"
-    if not export and getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
+    show_jiten_work_search = not export and getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip()
+    show_jiten_attribution = show_jiten_work_search or (getattr(config, "usegsmapi", False) and getattr(config, "usegsmfutureexposure", False))
+    if show_jiten_work_search:
         jiten_work_key_css_gradient = "linear-gradient(90deg"
         for i in range(0, gradient_key_step_count + 1):
             jiten_work_key_css_gradient += "," + util.get_gradient_color_hex(i / gradient_key_step_count, JITEN_SELECTED_WORK_GRADIENT)
         jiten_work_key_css_gradient += ")"
         result_html += "<p style=\"text-align: center;\">Selected Jiten work&nbsp;<span class=\"key\" style=\"background: " + jiten_work_key_css_gradient + "; width: 21em;\">&nbsp;</span>&nbsp;More occurrences</p>\n"
     result_html += "<hr style=\"border-style: dashed;border-color: #666;width: 100%;\">\n"
-    if not export and getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
+    if show_jiten_work_search:
         result_html += JITEN_WORK_EXPOSURE_HTML_SNIPPET
+    elif show_jiten_attribution:
+        result_html += JITEN_GSM_ATTRIBUTION_HTML_SNIPPET
     result_html += "<div style=\"text-align: center;\">\n"
 
     units_list = {
@@ -1181,6 +1185,16 @@ body {
   font-size: 0.85em;
   margin-top: 0.45em;
 }
+
+.jiten-attribution {
+  color: #666;
+  font-size: 0.8em;
+  margin-top: 0.35em;
+}
+
+.jiten-attribution a {
+  color: #1034A6;
+}
 """).strip()
 
 SEARCH_CSS_SNIPPET = """
@@ -1261,7 +1275,16 @@ JITEN_WORK_EXPOSURE_HTML_SNIPPET = """
   </div>
   <div id="kg-jiten-results" class="jiten-work-results"></div>
   <div id="kg-jiten-status" class="jiten-work-status">Search a Jiten work to preview its occurrences on missing kanji. First use for a work can be slow while its vocabulary is cached.</div>
+  <div class="jiten-attribution">Search, deck, and media vocabulary data are fetched from <a href="https://jiten.moe/">jiten.moe</a> and licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</div>
 </div>
+""".strip()
+
+JITEN_ATTRIBUTION_HTML_SNIPPET = """
+<div class="jiten-attribution">Jiten media vocabulary data are fetched from <a href="https://jiten.moe/">jiten.moe</a> and licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</div>
+""".strip()
+
+JITEN_GSM_ATTRIBUTION_HTML_SNIPPET = """
+<div class="jiten-attribution">GSM unfinished-work media data are matched to Jiten media decks; the media vocabulary data are fetched from <a href="https://jiten.moe/">jiten.moe</a> and licensed under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</div>
 """.strip()
 
 JITEN_WORK_EXPOSURE_JS_SNIPPET = """

@@ -126,6 +126,8 @@ When a Jiten API token is saved, generated grids include a Jiten work search pan
 
 The `Additive` toggle lets you keep several selected works at once. For each missing kanji, the selected work with the highest occurrence count is shown, and the tooltip shows that work plus its occurrence count. This can help if you want to plan a sequence of works that covers more missing kanji. Use `Clear` to reset the selection.
 
+Jiten search, deck, and media vocabulary data are attributed in the grid UI as data from `jiten.moe`, licensed under `CC BY-SA 4.0`.
+
 ![ScreenshotGif](./jitenSearch.gif)
 
 ### GSM unfinished work exposure
