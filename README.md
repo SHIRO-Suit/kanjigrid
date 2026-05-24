@@ -157,6 +157,8 @@ The `Study batch size` setting controls the filtered deck's `Limit to` value whe
 
 `Make Study Now decks temporary` makes `Study now` open a temporary filtered deck instead of creating a persistent study deck.
 
+`Exclude external-source known kanji from study decks` lets selected external sources remove kanji from study-deck targets even when Anki only has unseen cards for those kanji. This is useful when sources such as Jiten or a TXT export already mark simple kanji as known. The grid study count shows how many cards were filtered by these deck settings.
+
 When pressing `Update All Decks`: 
  - Cards that are in "learning" are returned to their original deck with the learning state preserved (anki default behavior).
  - if `Apply current batch size when updating decks` is toggled, changes the decks ­`limit to` value to the global one. this exists so that user set limits can be kept.
