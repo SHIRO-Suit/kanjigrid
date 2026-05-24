@@ -142,6 +142,18 @@ config_schema = {
     "rebuildstudydecksonnoteadd": {
         "default": False,
     },
+    "excludeexternalknownfromstudydecks": {
+        "default": False,
+    },
+    "excludeexternaljitenfromstudydecks": {
+        "default": True,
+    },
+    "excludeexternaltxtfromstudydecks": {
+        "default": True,
+    },
+    "excludeexternalgsmfromstudydecks": {
+        "default": False,
+    },
     "studydecklastnoteid": {
         "default": 0,
     },

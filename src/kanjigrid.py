@@ -280,6 +280,8 @@ class KanjiGrid:
             self.displaygrid(config, util.get_deck_name(mw, config), units)
 
     def prepare_saved_grid_config(self) -> types.SimpleNamespace:
+        if mw.col is None:
+            raise RuntimeError("Anki collection is not loaded yet.")
         config = types.SimpleNamespace(**config_util.get_config(mw))
         if getattr(config, "defaultdeck", "") == "*":
             config.did = "*"
@@ -294,6 +296,8 @@ class KanjiGrid:
         return config
 
     def has_saved_grid_config(self) -> bool:
+        if mw.col is None:
+            return False
         config = types.SimpleNamespace(**config_util.get_config(mw))
         default_deck = getattr(config, "defaultdeck", "").strip()
         default_field = getattr(config, "defaultfield", "").strip()
@@ -747,6 +751,10 @@ class KanjiGrid:
             config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
             config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
             config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
+            config.excludeexternalknownfromstudydecks = exclude_external_known_from_study_decks.isChecked()
+            config.excludeexternaljitenfromstudydecks = exclude_external_jiten_from_study_decks.isChecked()
+            config.excludeexternaltxtfromstudydecks = exclude_external_txt_from_study_decks.isChecked()
+            config.excludeexternalgsmfromstudydecks = exclude_external_gsm_from_study_decks.isChecked()
             config.searchfilter = search_filter.text()
             config.interval = strong_interval.value()
             config.groupby = groupby.currentIndex()
@@ -781,6 +789,10 @@ class KanjiGrid:
             saved_config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
             saved_config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
             saved_config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
+            saved_config.excludeexternalknownfromstudydecks = exclude_external_known_from_study_decks.isChecked()
+            saved_config.excludeexternaljitenfromstudydecks = exclude_external_jiten_from_study_decks.isChecked()
+            saved_config.excludeexternaltxtfromstudydecks = exclude_external_txt_from_study_decks.isChecked()
+            saved_config.excludeexternalgsmfromstudydecks = exclude_external_gsm_from_study_decks.isChecked()
             saved_config.saveselection = save_selection.isChecked()
             if save_selection.isChecked():
                 saved_config.defaultdeck = deckcb.currentText()
@@ -952,6 +964,34 @@ class KanjiGrid:
         update_study_decks_on_collection_load.setChecked(getattr(config, "updatestudydecksonstartup", True))
         decks_tab_vertical_layout.addWidget(update_study_decks_on_collection_load)
 
+        exclude_external_known_from_study_decks = QCheckBox("Exclude external-source known kanji from study decks")
+        exclude_external_known_from_study_decks.setChecked(getattr(config, "excludeexternalknownfromstudydecks", False))
+        decks_tab_vertical_layout.addWidget(exclude_external_known_from_study_decks)
+        exclude_external_note = QLabel("When enabled, selected external sources can prevent known kanji from being used as study-deck targets.")
+        exclude_external_note.setWordWrap(True)
+        exclude_external_note.setStyleSheet("color: gray")
+        decks_tab_vertical_layout.addWidget(exclude_external_note)
+
+        exclude_external_sources_widget = QWidget()
+        exclude_external_sources_layout = QVBoxLayout()
+        exclude_external_sources_layout.setContentsMargins(18, 0, 0, 0)
+        exclude_external_jiten_from_study_decks = QCheckBox("Jiten API / Jiten backup")
+        exclude_external_jiten_from_study_decks.setChecked(getattr(config, "excludeexternaljitenfromstudydecks", True))
+        exclude_external_txt_from_study_decks = QCheckBox("Plain TXT export")
+        exclude_external_txt_from_study_decks.setChecked(getattr(config, "excludeexternaltxtfromstudydecks", True))
+        exclude_external_gsm_from_study_decks = QCheckBox("GSM encounters")
+        exclude_external_gsm_from_study_decks.setChecked(getattr(config, "excludeexternalgsmfromstudydecks", False))
+        exclude_external_sources_layout.addWidget(exclude_external_jiten_from_study_decks)
+        exclude_external_sources_layout.addWidget(exclude_external_txt_from_study_decks)
+        exclude_external_sources_layout.addWidget(exclude_external_gsm_from_study_decks)
+        exclude_external_sources_widget.setLayout(exclude_external_sources_layout)
+        decks_tab_vertical_layout.addWidget(exclude_external_sources_widget)
+
+        def update_exclude_external_sources_visibility() -> None:
+            exclude_external_sources_widget.setVisible(exclude_external_known_from_study_decks.isChecked())
+
+        update_exclude_external_sources_visibility()
+
         def save_deck_preferences() -> None:
             saved_config = types.SimpleNamespace(**config_util.get_config(mw))
             saved_config.usequerystudydeck = use_query_study_deck.isChecked()
@@ -961,6 +1001,10 @@ class KanjiGrid:
             saved_config.updatestudydeckbatchsize = update_study_deck_batch_size.isChecked()
             saved_config.rebuildstudydecksonnoteadd = rebuild_study_decks_on_note_add.isChecked()
             saved_config.updatestudydecksonstartup = update_study_decks_on_collection_load.isChecked()
+            saved_config.excludeexternalknownfromstudydecks = exclude_external_known_from_study_decks.isChecked()
+            saved_config.excludeexternaljitenfromstudydecks = exclude_external_jiten_from_study_decks.isChecked()
+            saved_config.excludeexternaltxtfromstudydecks = exclude_external_txt_from_study_decks.isChecked()
+            saved_config.excludeexternalgsmfromstudydecks = exclude_external_gsm_from_study_decks.isChecked()
             config_util.set_config(mw, saved_config)
 
         study_deck_batch_size.valueChanged.connect(lambda _: save_deck_preferences())
@@ -970,6 +1014,10 @@ class KanjiGrid:
         split_big_dynamic_queries.toggled.connect(lambda _: save_deck_preferences())
         rebuild_study_decks_on_note_add.toggled.connect(lambda _: save_deck_preferences())
         update_study_decks_on_collection_load.toggled.connect(lambda _: save_deck_preferences())
+        exclude_external_known_from_study_decks.toggled.connect(lambda _: (update_exclude_external_sources_visibility(), save_deck_preferences()))
+        exclude_external_jiten_from_study_decks.toggled.connect(lambda _: save_deck_preferences())
+        exclude_external_txt_from_study_decks.toggled.connect(lambda _: save_deck_preferences())
+        exclude_external_gsm_from_study_decks.toggled.connect(lambda _: save_deck_preferences())
 
         decks_tab.setLayout(decks_tab_vertical_layout)
         decks_tab_scroll_area.setWidget(decks_tab)

@@ -131,6 +131,22 @@ def external_unit_score(unit, config: types.SimpleNamespace) -> float:
     return util.score_adjust(unit.avg_interval / config.interval)
 
 
+def preserve_anki_unit(units: dict, ch: str, anki_priority: bool) -> bool:
+    return anki_priority and ch in units and units[ch].seen_cards_count > 0
+
+
+def merge_external_unit(units: dict, ch: str, external_unit, anki_priority: bool):
+    if not anki_priority or ch not in units:
+        return external_unit
+    anki_unit = units[ch]
+    if anki_unit.seen_cards_count == 0 and anki_unit.unseen_cards_count > 0:
+        return external_unit._replace(
+            unseen_cards_count=anki_unit.unseen_cards_count,
+            unseen_card_ids=anki_unit.unseen_card_ids,
+        )
+    return external_unit
+
+
 def add_textfile_units(units: dict, config: types.SimpleNamespace, anki_priority: bool = False) -> dict:
     source_path = getattr(config, "textsourcepath", "")
     if not source_path or not os.path.isfile(source_path):
@@ -150,9 +166,10 @@ def add_textfile_units(units: dict, config: types.SimpleNamespace, anki_priority
                 first_seen[ch] = min(first_seen.get(ch, idx), idx)
 
     for ch, count in counts.items():
-        if anki_priority and ch in units:
+        if preserve_anki_unit(units, ch, anki_priority):
             continue
-        units[ch] = util.unit_tuple(first_seen[ch], ch, -float(count), count, 0, ())
+        external_unit = util.unit_tuple(first_seen[ch], ch, -float(count), count, 0, ())
+        units[ch] = merge_external_unit(units, ch, external_unit, anki_priority)
 
     return units
 
@@ -198,10 +215,10 @@ def add_gsm_aggregate_units(units: dict, aggregate: dict, anki_priority: bool = 
         return units
     max_count = max(data["count"] for data in aggregate.values())
     for ch, data in aggregate.items():
-        if anki_priority and ch in units:
+        if preserve_anki_unit(units, ch, anki_priority):
             continue
         score = 1 if max_count <= 1 else (math.log1p(data["count"]) / math.log1p(max_count))
-        units[ch] = util.unit_tuple(
+        external_unit = util.unit_tuple(
             data["idx"],
             ch,
             -(GSM_ENCOUNTER_MARKER + (score * EXTERNAL_SCORE_SCALE)),
@@ -209,6 +226,7 @@ def add_gsm_aggregate_units(units: dict, aggregate: dict, anki_priority: bool = 
             0,
             (),
         )
+        units[ch] = merge_external_unit(units, ch, external_unit, anki_priority)
 
     return units
 
@@ -650,10 +668,11 @@ def add_jiten_backup_units(units: dict, config: types.SimpleNamespace, anki_prio
             data["count"] += 1
 
     for ch, data in aggregate.items():
-        if anki_priority and ch in units:
+        if preserve_anki_unit(units, ch, anki_priority):
             continue
         avg_interval = data["total"] / data["count"]
-        units[ch] = util.unit_tuple(data["idx"], ch, -(JITEN_INTERVAL_MARKER + avg_interval), data["count"], 0, ())
+        external_unit = util.unit_tuple(data["idx"], ch, -(JITEN_INTERVAL_MARKER + avg_interval), data["count"], 0, ())
+        units[ch] = merge_external_unit(units, ch, external_unit, anki_priority)
 
     return units
 
@@ -662,6 +681,42 @@ def textfile_grid(config: types.SimpleNamespace):
     if getattr(config, "textsourcekind", "txt") == "jiten":
         return add_jiten_backup_units({}, config)
     return add_textfile_units({}, config)
+
+def external_known_units_for_study_decks(config: types.SimpleNamespace) -> dict:
+    if not getattr(config, "excludeexternalknownfromstudydecks", False):
+        return {}
+
+    units = {}
+    if getattr(config, "usetextsource", False):
+        textsourcekind = getattr(config, "textsourcekind", "txt")
+        try:
+            if textsourcekind == "jiten" and getattr(config, "excludeexternaljitenfromstudydecks", True):
+                units.update(add_jiten_backup_units({}, config))
+            elif textsourcekind != "jiten" and getattr(config, "excludeexternaltxtfromstudydecks", True):
+                units.update(add_textfile_units({}, config))
+        except Exception:  # noqa: BLE001
+            pass
+
+    if getattr(config, "usejitenapi", False) and getattr(config, "excludeexternaljitenfromstudydecks", True):
+        try:
+            units.update(add_jiten_backup_units({}, config))
+        except Exception:  # noqa: BLE001
+            pass
+
+    if getattr(config, "excludeexternalgsmfromstudydecks", False):
+        try:
+            if getattr(config, "usegsmapi", False):
+                units.update(add_gsm_api_units({}, config))
+            elif getattr(config, "usegsmsource", False):
+                units.update(add_gsm_csv_units({}, config))
+        except Exception:  # noqa: BLE001
+            pass
+
+    return units
+
+
+def external_known_kanji_for_study_decks(config: types.SimpleNamespace) -> set:
+    return set(external_known_units_for_study_decks(config).keys())
 
 
 def get_grouping_overall_total(units_list: list, grouping: data.KanjiGrouping, config: types.SimpleNamespace) -> str:
@@ -748,19 +803,51 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
 
         return tile
 
-    def study_card_ids(study_units: list) -> list:
+    external_known_study_chars = external_known_kanji_for_study_decks(config)
+
+    def unit_has_study_cards(unit) -> bool:
+        return unit.unseen_cards_count > 0 and (unit.seen_cards_count == 0 or unit.avg_interval < 0)
+
+    def study_card_ids(study_units: list, apply_external_filter: bool = True) -> list:
         card_ids = []
         for unit in study_units:
-            if unit.seen_cards_count == 0 and unit.unseen_cards_count > 0:
+            if apply_external_filter and unit.value in external_known_study_chars:
+                continue
+            if unit_has_study_cards(unit):
                 card_ids.extend(unit.unseen_card_ids)
         return sorted(set(card_ids))
 
-    def studybuttons(group_index: int, card_ids: list) -> str:
-        if export or len(card_ids) == 0:
+    def study_filter_info(study_units: list) -> tuple:
+        baseline_ids = set(study_card_ids(study_units, apply_external_filter=False))
+        final_ids = set(study_card_ids(study_units, apply_external_filter=True))
+        removed_ids = baseline_ids - final_ids
+        if not removed_ids:
+            return (0, [])
+        filtered_chars = set()
+        for unit in study_units:
+            if unit_has_study_cards(unit) and set(unit.unseen_card_ids).intersection(removed_ids):
+                filtered_chars.add(unit.value)
+        return (len(removed_ids), sorted(filtered_chars))
+
+    def studybuttons(group_index: int, card_ids: list, filtered_card_count: int = 0, filtered_chars: list = None) -> str:
+        filtered_kanji_count = len(filtered_chars or [])
+        if export or (len(card_ids) == 0 and filtered_kanji_count == 0):
             return ""
         label = str(len(card_ids)) + " unseen card"
         if len(card_ids) != 1:
             label += "s"
+        if filtered_kanji_count > 0:
+            filtered_chars_attr = html.escape("".join(filtered_chars or []), quote=True)
+            filtered_label = str(filtered_kanji_count) + " kanji"
+            if filtered_card_count != filtered_kanji_count:
+                filtered_label += " / " + str(filtered_card_count) + " cards"
+            label += (
+                " <span class=\"study-filtered-count\" data-filtered-chars=\"" + filtered_chars_attr
+                + "\" title=\"Hover to highlight kanji excluded by external sources or deck settings\">("
+                + filtered_label + " excluded by external sources/settings)</span>"
+            )
+        if len(card_ids) == 0:
+            return "<p class=\"study-actions\"><span class=\"study-count\">" + label + "</span></p>\n"
         return (
             "<p class=\"study-actions\">"
             + "<span class=\"study-count\">" + label + "</span>"
@@ -787,6 +874,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
     if not export:
         result_html += "<style type=\"text/css\">" + SEARCH_CSS_SNIPPET + "</style>"
         result_html += "<script>" + SEARCH_JS_SNIPPET + "</script>"
+        result_html += "<script>" + STUDY_FILTER_HIGHLIGHT_JS_SNIPPET + "</script>"
         if getattr(config, "usejitenapi", False) and getattr(config, "jitenapikey", "").strip():
             result_html += "<script>" + JITEN_WORK_EXPOSURE_JS_SNIPPET + "</script>"
     result_html += "</head>\n"
@@ -874,6 +962,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                     table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
             table += "</div>\n"
             block_study_card_ids = study_card_ids(sorted_units)
+            filtered_study_card_count, filtered_study_chars = study_filter_info(sorted_units)
             total_count = len(grouping.groups[i].characters)
             if config.unseen:
                 unseen_kanji = []
@@ -890,7 +979,7 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                         table += element
                     table += "</div></details>\n"
             result_html += "<h4>" + str(count_found) + " of " + str(total_count) + " Found - " + "{:.2f}".format(round(count_found / (total_count if total_count > 0 else 1) * 100, 2)) + "%, " + str(count_known) + " of " + str(total_count) + " Known - " + "{:.2f}".format(round(count_known / (total_count if total_count > 0 else 1) * 100, 2)) + "%</h4>\n"
-            result_html += studybuttons(i, block_study_card_ids)
+            result_html += studybuttons(i, block_study_card_ids, filtered_study_card_count, filtered_study_chars)
             result_html += table
 
         chars = reduce(lambda x, y: x+y, dict(grouping.groups).values())
@@ -908,7 +997,12 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
                 table += kanjitile(unit.value, bgcolor, unit.seen_cards_count, unit.unseen_cards_count, unit.avg_interval)
         table += "</div>\n"
         result_html += "<h4>" + str(count_known) + " of " + str(total_count) + " Known - " + "{:.2f}".format(round(count_known / (total_count if total_count > 0 else 1) * 100, 2)) + "%</h4>\n"
-        result_html += studybuttons(len(grouping.groups), study_card_ids(leftover_units))
+        leftover_study_card_ids = study_card_ids(leftover_units)
+        result_html += studybuttons(
+            len(grouping.groups),
+            leftover_study_card_ids,
+            *study_filter_info(leftover_units),
+        )
         result_html += table
         result_html += "<style type=\"text/css\">.datasource{font-style:italic;font-size:0.75em;margin-top:1em;overflow-wrap:break-word;}.datasource a{color:#1034A6;}</style><span class=\"datasource\">Data source: " + ' '.join("<a href=\"{}\">{}</a>".format(w, urllib.parse.unquote(w)) if re.match("https?://", w) else w for w in grouping.source.split(' ')) + "</span>"
     else:
@@ -928,7 +1022,12 @@ def generate(mw, config: types.SimpleNamespace, units, export: bool = False) -> 
         if count_known == 0:
             known_percent = "0%"
         result_html += "<h4>" + str(count_known) + " of " + str(total_count) + " Known - " + known_percent + "</h4>\n"
-        result_html += studybuttons(0, study_card_ids(units_list))
+        filtered_study_card_ids = study_card_ids(units_list)
+        result_html += studybuttons(
+            0,
+            filtered_study_card_ids,
+            *study_filter_info(units_list),
+        )
         result_html += table
     result_html += "</div></body></html>\n"
     return result_html
@@ -1057,6 +1156,17 @@ body {
   display: inline-block;
   font-weight: 600;
   margin: 0.15em 0.4em 0.15em 0;
+}
+
+.study-filtered-count {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 0.15em;
+}
+
+.grid-item.filtered-by-study-settings {
+  outline: 1px solid #111;
+  outline-offset: -2px;
 }
 
 .study-button {
@@ -1196,6 +1306,27 @@ body {
   color: #1034A6;
 }
 """).strip()
+
+STUDY_FILTER_HIGHLIGHT_JS_SNIPPET = """
+function kgSetStudyFilteredHighlight(target, enabled) {
+  const chars = new Set(Array.from(target.dataset.filteredChars || ''));
+  document.querySelectorAll('.grid-item[data-char]').forEach((tile) => {
+    if (chars.has(tile.dataset.char || '')) {
+      tile.classList.toggle('filtered-by-study-settings', enabled);
+    }
+  });
+}
+
+document.addEventListener('mouseover', (event) => {
+  const target = event.target.closest('.study-filtered-count');
+  if (target) kgSetStudyFilteredHighlight(target, true);
+});
+
+document.addEventListener('mouseout', (event) => {
+  const target = event.target.closest('.study-filtered-count');
+  if (target) kgSetStudyFilteredHighlight(target, false);
+});
+""".strip()
 
 SEARCH_CSS_SNIPPET = """
 .grid-item.highlight {

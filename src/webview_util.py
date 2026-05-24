@@ -39,6 +39,20 @@ STUDY_DECK_CONFIG_KEYS = (
     "unseen",
     "usequerystudydeck",
     "splitbigdynamicqueries",
+    "usetextsource",
+    "mixtextsource",
+    "textsourcekind",
+    "textsourcepath",
+    "jmdictpath",
+    "usejitenapi",
+    "jitenapikey",
+    "usegsmapi",
+    "usegsmsource",
+    "gsmsourcepath",
+    "excludeexternalknownfromstudydecks",
+    "excludeexternaljitenfromstudydecks",
+    "excludeexternaltxtfromstudydecks",
+    "excludeexternalgsmfromstudydecks",
 )
 
 def init_webview() -> None:
@@ -83,15 +97,22 @@ def study_units_for_group(units: dict, config: types.SimpleNamespace, group_inde
     grouped_chars = set("".join(group.characters for group in grouping.groups))
     return [unit for unit in units.values() if unit.value not in grouped_chars]
 
-def unseen_card_ids_for_study_units(study_units: list) -> list:
+def unit_has_study_cards(unit) -> bool:
+    return unit.unseen_cards_count > 0 and (unit.seen_cards_count == 0 or unit.avg_interval < 0)
+
+def unseen_card_ids_for_study_units(study_units: list, excluded_chars: set = None) -> list:
+    excluded_chars = excluded_chars or set()
     card_ids = []
     for unit in study_units:
-        if unit.seen_cards_count == 0 and unit.unseen_cards_count > 0:
+        if unit.value in excluded_chars:
+            continue
+        if unit_has_study_cards(unit):
             card_ids.extend(unit.unseen_card_ids)
     return sorted(set(card_ids))
 
-def search_chars_for_study_group(units: dict, config: types.SimpleNamespace, group_index: int, group_units: list) -> set:
-    chars = {unit.value for unit in group_units if unit.seen_cards_count == 0}
+def search_chars_for_study_group(units: dict, config: types.SimpleNamespace, group_index: int, group_units: list, excluded_chars: set = None) -> set:
+    excluded_chars = excluded_chars or set()
+    chars = {unit.value for unit in group_units if unit_has_study_cards(unit) and unit.value not in excluded_chars}
     if config.groupby <= 0:
         return chars
 
@@ -102,8 +123,10 @@ def search_chars_for_study_group(units: dict, config: types.SimpleNamespace, gro
     for char in grouping.groups[group_index].characters:
         if getattr(config, "kanjionly", True) and not util.is_kanji(char):
             continue
+        if char in excluded_chars:
+            continue
         unit = units.get(char)
-        if unit is None or unit.seen_cards_count == 0:
+        if unit is None or unit_has_study_cards(unit):
             chars.add(char)
     return chars
 
@@ -437,10 +460,6 @@ def normalize_study_config(config: types.SimpleNamespace) -> types.SimpleNamespa
 
     config.timetravel_enabled = False
     config.timetravel_time = 0
-    config.usetextsource = False
-    config.usejitenapi = False
-    config.usegsmsource = False
-    config.usegsmapi = False
     return config
 
 def study_deck_config_snapshot(config: types.SimpleNamespace, group_name: str) -> dict:
@@ -516,6 +535,9 @@ def config_for_study_deck(deck: dict, fallback_config: types.SimpleNamespace = N
         snapshot = fallback_config.__dict__ if fallback_config is not None else config_util.get_config(mw)
     current_config = fallback_config if fallback_config is not None else types.SimpleNamespace(**config_util.get_config(mw))
     config = types.SimpleNamespace(**dict(snapshot))
+    for key in STUDY_DECK_CONFIG_KEYS:
+        if not hasattr(config, key) and hasattr(current_config, key):
+            setattr(config, key, getattr(current_config, key))
     config.studydeckbatchsize = getattr(current_config, "studydeckbatchsize", 10)
     config.updatestudydeckbatchsize = getattr(current_config, "updatestudydeckbatchsize", False)
     if hasattr(config, "group_name"):
@@ -707,7 +729,8 @@ def create_study_deck_for_group(group_index: int, config: types.SimpleNamespace,
         config.fieldslist = normalize_fields_list(config.fieldslist)
 
     group_units = study_units_for_group(units, config, group_index)
-    search_chars = search_chars_for_study_group(units, config, group_index, group_units)
+    excluded_chars = generate_grid.external_known_kanji_for_study_decks(config)
+    search_chars = search_chars_for_study_group(units, config, group_index, group_units, excluded_chars)
     if len(search_chars) == 0:
         return (None, 0, "")
 
@@ -732,7 +755,7 @@ def create_study_deck_for_group(group_index: int, config: types.SimpleNamespace,
 
     if search_query is None and search_queries is None:
         notify_query_fallback(study_group_name(config, group_index), fallback_message)
-        card_ids = unseen_card_ids_for_study_units(group_units)
+        card_ids = unseen_card_ids_for_study_units(group_units, excluded_chars)
         if len(card_ids) == 0:
             return (None, 0, "")
         search_query = cid_search(card_ids)
@@ -823,7 +846,8 @@ def update_matching_study_decks(config: types.SimpleNamespace = None, group_inde
         units = units_by_deck[units_key]
 
         group_units = study_units_for_group(units, deck_config, group_index)
-        search_chars = search_chars_for_study_group(units, deck_config, group_index, group_units)
+        excluded_chars = generate_grid.external_known_kanji_for_study_decks(deck_config)
+        search_chars = search_chars_for_study_group(units, deck_config, group_index, group_units, excluded_chars)
         search_query = group_search_query(deck_config, group_index, search_chars)
         search_queries = None
         card_count = 0
@@ -844,7 +868,7 @@ def update_matching_study_decks(config: types.SimpleNamespace = None, group_inde
         if search_query is None and search_queries is None:
             fallback_count += 1
             logger.log(f"Kanji Grid query fallback used for {study_group_name(deck_config, group_index)}")
-            card_ids = unseen_card_ids_for_study_units(group_units)
+            card_ids = unseen_card_ids_for_study_units(group_units, excluded_chars)
             search_query = cid_search(card_ids)
             card_count = len(card_ids)
 
@@ -1001,6 +1025,7 @@ def append_new_notes_to_study_decks(note_ids: list, config: types.SimpleNamespac
     group_lookup = group_index_by_kanji(config) if config.groupby > 0 else {}
     leftover_index = len(data.groupings[config.groupby - 1].groups) if config.groupby > 0 else 0
     deck_card_ids = {}
+    excluded_chars = generate_grid.external_known_kanji_for_study_decks(config)
 
     for note_id in note_ids:
         try:
@@ -1009,6 +1034,7 @@ def append_new_notes_to_study_decks(note_ids: list, config: types.SimpleNamespac
             continue
 
         chars = note_kanji_for_saved_fields(note, config)
+        chars = {char for char in chars if char not in excluded_chars}
         if len(chars) == 0:
             continue
 
